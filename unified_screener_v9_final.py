@@ -48,7 +48,7 @@ CARRIED OVER FROM v3 (unchanged)
   - Batched rate-limited downloads, full rejection logging, liquidity gate
 
 REQUIREMENTS
-  pip install yfinance pandas pandas_ta numpy scipy requests feedparser --break-system-packages
+  pip install yfinance pandas numpy scipy requests feedparser --break-system-packages
 """
 
 import time
@@ -98,16 +98,52 @@ except ImportError:
     raise SystemExit("Run: pip install yfinance --break-system-packages")
 
 try:
-    import pandas_ta as ta
-except ImportError:
-    raise SystemExit("Run: pip install pandas_ta --break-system-packages")
-
-try:
     import feedparser
 except ImportError:
     raise SystemExit("Run: pip install feedparser --break-system-packages")
 
 from scipy.signal import argrelextrema
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PURE PANDAS/NUMPY TECHNICAL INDICATORS (no pandas_ta dependency)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def sma(series: pd.Series, length: int) -> pd.Series:
+    """Simple Moving Average."""
+    return series.rolling(window=length, min_periods=length).mean()
+
+
+def atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14) -> pd.Series:
+    """Average True Range."""
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return tr.rolling(window=length, min_periods=length).mean()
+
+
+def rsi(close: pd.Series, length: int = 14) -> pd.Series:
+    """Relative Strength Index."""
+    delta = close.diff()
+    gain = delta.clip(lower=0).rolling(window=length, min_periods=length).mean()
+    loss = (-delta.clip(upper=0)).rolling(window=length, min_periods=length).mean()
+    rs = gain / loss.replace(0, np.nan)
+    return 100 - (100 / (1 + rs))
+
+
+def macd(close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
+    """MACD indicator. Returns DataFrame with MACD_12_26_9, MACDh_12_26_9, MACDs_12_26_9."""
+    ema_fast = close.ewm(span=fast, adjust=False).mean()
+    ema_slow = close.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    histogram = macd_line - signal_line
+    return pd.DataFrame({
+        "MACD_12_26_9": macd_line,
+        "MACDh_12_26_9": histogram,
+        "MACDs_12_26_9": signal_line,
+    })
 
 # ═════════════════════════════════════════════════════════════════════════
 # CONFIG — tune everything here, nowhere else
@@ -732,10 +768,10 @@ def reconcile_with_holdings(df: pd.DataFrame) -> pd.DataFrame:
 def evaluate_swing(symbol: str, df: pd.DataFrame) -> Optional[dict]:
     try:
         df = df.copy()
-        df["SMA_50"]  = ta.sma(df["Close"], length=50)
-        df["SMA_150"] = ta.sma(df["Close"], length=150)
-        df["SMA_200"] = ta.sma(df["Close"], length=200)
-        df["ATR_14"]  = ta.atr(df["High"], df["Low"], df["Close"], length=CONFIG["swing_atr_period"])
+        df["SMA_50"]  = sma(df["Close"], length=50)
+        df["SMA_150"] = sma(df["Close"], length=150)
+        df["SMA_200"] = sma(df["Close"], length=200)
+        df["ATR_14"]  = atr(df["High"], df["Low"], df["Close"], length=CONFIG["swing_atr_period"])
 
         if df[["SMA_200", "ATR_14"]].iloc[-1].isna().any():
             REJECTION_LOG[symbol] = "Swing: indicators NaN (insufficient clean history)"
@@ -1228,7 +1264,7 @@ def evaluate_core(symbol: str, df: pd.DataFrame, fund: Fundamentals) -> Optional
         elif CONFIG["core_rsi_ideal_high"] < rsi <= 72:
             t += 3; reasons.append(f"RSI {rsi:.0f} — slightly elevated")
         # FIX Issue 15: Near-52W-low only bullish if stock is actually recovering (above 20D SMA)
-        sma20 = ta.sma(df["Close"], length=20).iloc[-1]
+        sma20 = sma(df["Close"], length=20).iloc[-1]
         if pos52 < 40 and close > sma20:
             t += 6; reasons.append(f"Near 52W low ({pos52:.0f}%) with recovery above 20D SMA — good entry")
         elif pos52 < 40:
@@ -1447,10 +1483,10 @@ def evaluate_nifty_regime() -> Optional[dict]:
 
     try:
         df = df.copy()
-        df["SMA_FAST"] = ta.sma(df["Close"], length=CONFIG["regime_sma_fast"])
-        df["SMA_SLOW"] = ta.sma(df["Close"], length=CONFIG["regime_sma_slow"])
-        df["RSI"] = ta.rsi(df["Close"], length=CONFIG["regime_rsi_period"])
-        macd = ta.macd(df["Close"])
+        df["SMA_FAST"] = sma(df["Close"], length=CONFIG["regime_sma_fast"])
+        df["SMA_SLOW"] = sma(df["Close"], length=CONFIG["regime_sma_slow"])
+        df["RSI"] = rsi(df["Close"], length=CONFIG["regime_rsi_period"])
+        macd = macd(df["Close"])
         df = pd.concat([df, macd], axis=1)
         hist_col = [c for c in df.columns if c.startswith("MACDh_")][0]
 

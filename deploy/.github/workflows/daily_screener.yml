@@ -19,7 +19,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install yfinance pandas pandas_ta numpy scipy requests feedparser --break-system-packages
+          pip install yfinance pandas numpy scipy requests feedparser --break-system-packages
 
       - name: Run screener
         env:
