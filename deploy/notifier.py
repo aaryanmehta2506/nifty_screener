@@ -89,49 +89,53 @@ def build_message() -> tuple[str, str]:
         lines.append("*Swing (3-6mo):*")
         for i, row in swing.iterrows():
             lines.append(
-                f"{i+1}. {row.get('Symbol','?')} | Score: {row.get('Score','?')} | "
+                f"{i+1}. {row.get('Symbol','?')} | Conf: {_fmt(row.get('Confidence_%'), '.0f')}% | "
                 f"CMP: ₹{_fmt(row.get('CMP'), '.1f')} | Target: ₹{_fmt(row.get('Target'), '.1f')} | "
-                f"SL: ₹{_fmt(row.get('Stop_Loss'), '.1f')} | R:R: {_fmt(row.get('RR_Ratio'), '.1f')}"
+                f"SL: ₹{_fmt(row.get('Stop_Loss'), '.1f')} | R:R: {_fmt(row.get('RR_Ratio'), '.1f')} | "
+                f"Regime: {row.get('Market_Regime','?')}"
             )
         lines.append("")
     if not core.empty:
         lines.append("*Core (1-2yr):*")
         for i, row in core.iterrows():
             lines.append(
-                f"{i+1}. {row.get('Symbol','?')} | Score: {row.get('Score','?')} | "
+                f"{i+1}. {row.get('Symbol','?')} | {row.get('Grade','?')} | Score: {row.get('Score','?')} | "
                 f"CMP: ₹{_fmt(row.get('CMP'), '.1f')} | Target: ₹{_fmt(row.get('Target'), '.1f')} | "
-                f"SL: ₹{_fmt(row.get('Stop_Loss'), '.1f')} | R:R: {_fmt(row.get('RR_Ratio'), '.1f')}"
+                f"SL: ₹{_fmt(row.get('Stop_Loss'), '.1f')} | R:R: {_fmt(row.get('RR_Ratio'), '.1f')} | "
+                f"Conf: {_fmt(row.get('Confidence_%'), '.0f')}% | Regime: {row.get('Market_Regime','?')}"
             )
     telegram_text = "\n".join(lines)
 
     # ── Email (HTML) ──────────────────────────────────────────────────
     def _swing_rows():
         if swing.empty:
-            return '<tr><td colspan="8">No picks today</td></tr>'
+            return '<tr><td colspan="9">No picks today</td></tr>'
         rows = []
         for i, row in swing.iterrows():
             rows.append(f"""
             <tr>
               <td>{i+1}</td>
               <td><strong>{row.get('Symbol','?')}</strong></td>
-              <td>{_fmt(row.get('Score'), '.0f')}</td>
+              <td>{_fmt(row.get('Confidence_%'), '.0f')}%</td>
               <td>₹{_fmt(row.get('CMP'), '.1f')}</td>
               <td>₹{_fmt(row.get('Target'), '.1f')}</td>
               <td>₹{_fmt(row.get('Stop_Loss'), '.1f')}</td>
               <td>{_fmt(row.get('Profit_%'), '.1f')}%</td>
               <td>{_fmt(row.get('RR_Ratio'), '.1f')}</td>
+              <td>{row.get('Market_Regime','?')}</td>
             </tr>""")
         return "".join(rows)
 
     def _core_rows():
         if core.empty:
-            return '<tr><td colspan="10">No picks today</td></tr>'
+            return '<tr><td colspan="11">No picks today</td></tr>'
         rows = []
         for i, row in core.iterrows():
             rows.append(f"""
             <tr>
               <td>{i+1}</td>
               <td><strong>{row.get('Symbol','?')}</strong></td>
+              <td>{row.get('Grade','?')}</td>
               <td>{_fmt(row.get('Score'), '.0f')}</td>
               <td>₹{_fmt(row.get('CMP'), '.1f')}</td>
               <td>₹{_fmt(row.get('Target'), '.1f')}</td>
@@ -167,8 +171,8 @@ def build_message() -> tuple[str, str]:
     <h2>Swing (3-6 months)</h2>
     <table>
       <tr>
-        <th>#</th><th>Symbol</th><th>Score</th><th>CMP</th><th>Target</th>
-        <th>Stop Loss</th><th>Profit %</th><th>R:R</th>
+        <th>#</th><th>Symbol</th><th>Confidence</th><th>CMP</th><th>Target</th>
+        <th>Stop Loss</th><th>Profit %</th><th>R:R</th><th>Regime</th>
       </tr>
       {_swing_rows()}
     </table>
@@ -176,7 +180,7 @@ def build_message() -> tuple[str, str]:
     <h2>Core (1-2 years)</h2>
     <table>
       <tr>
-        <th>#</th><th>Symbol</th><th>Score</th><th>CMP</th><th>Target</th>
+        <th>#</th><th>Symbol</th><th>Signal</th><th>Score</th><th>CMP</th><th>Target</th>
         <th>Stop Loss</th><th>Profit %</th><th>Risk %</th><th>R:R</th><th>Confidence</th>
       </tr>
       {_core_rows()}
