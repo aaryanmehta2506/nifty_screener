@@ -172,7 +172,7 @@ CONFIG = {
     "swing_vcp_lookback_days": 60,
     "swing_vcp_min_peaks": 2,          # LETHAL FIX: 2 peaks (was 3 — too strict, 30% hit rate)
     "swing_vcp_peak_order": 5,
-    "swing_target_rr_min": 2.0,        # LETHAL FIX: 2.0x R:R (was 3.0 — too strict, 30% hit rate)
+    "swing_target_rr_min": 1.5,        # LETHAL FIX: 1.5x R:R (was 2.0 — too strict, empty swing book)
     "swing_min_volume_surge": 1.3,     # FIX: require volume confirmation
     "swing_min_sma20_above": False,    # LETHAL FIX: disabled (was True — too strict)
     "swing_min_market_cap_cr": 0,      # LETHAL FIX: disabled (was 5000 — too strict, causes rate limits)
@@ -206,6 +206,7 @@ CONFIG = {
     "portfolio_size_inr": 136000,      # your current portfolio value
     "risk_per_trade_pct": 0.035,       # LETHAL FIX: 3.5% risk (was 2.5%) — bigger positions for 50%+ returns
     "max_single_position_pct": 0.25,   # LETHAL FIX: 25% max (was 18%) — higher conviction = bigger size
+    "max_total_deployment_pct": 0.95,  # LETHAL FIX: cap total deployment at 95% of portfolio (prevent over-allocation)
 
     # ── BULK/BLOCK DEALS ──────────────────────────────────────────────────
     "bulk_deals_min_value_cr": 1.0,    # ignore deals below ₹1 crore (noise)
@@ -604,13 +605,18 @@ def passes_liquidity_gate(symbol: str, df: pd.DataFrame) -> bool:
 # 5. POSITION SIZING — NEW IN v3
 # ═════════════════════════════════════════════════════════════════════════
 
-def calculate_position_size(entry_price: float, stop_loss: float) -> Optional[dict]:
+def calculate_position_size(entry_price: float, stop_loss: float,
+                            existing_deploy: float = 0.0) -> Optional[dict]:
     """
     Risk-based position sizing: never risk more than risk_per_trade_pct of
     total portfolio on a single trade, AND never deploy more than
     max_single_position_pct of portfolio into one stock (even if the stop
     is tight enough that pure risk-sizing would suggest a bigger position).
     Both caps are enforced — whichever gives the SMALLER position wins.
+    
+    LETHAL FIX: Also respects total portfolio deployment cap — if existing
+    positions already use X% of portfolio, new positions are scaled down
+    to avoid exceeding 100% deployment.
     """
     risk_per_share = entry_price - stop_loss
     if risk_per_share <= 0:
@@ -619,6 +625,11 @@ def calculate_position_size(entry_price: float, stop_loss: float) -> Optional[di
     portfolio = CONFIG["portfolio_size_inr"]
     max_risk_amount = portfolio * CONFIG["risk_per_trade_pct"]
     max_position_value = portfolio * CONFIG["max_single_position_pct"]
+    
+    # LETHAL FIX: Cap total deployment at portfolio size (prevent over-allocation)
+    max_total_deploy = portfolio * CONFIG.get("max_total_deployment_pct", 0.95)
+    remaining_deploy_capacity = max(0, max_total_deploy - existing_deploy)
+    max_position_value = min(max_position_value, remaining_deploy_capacity)
 
     shares_by_risk = int(max_risk_amount // risk_per_share)
     shares_by_cap  = int(max_position_value // entry_price)
@@ -785,7 +796,7 @@ def evaluate_swing(symbol: str, df: pd.DataFrame) -> Optional[dict]:
         sma200_1mo_ago = df["SMA_200"].iloc[-22]
 
         # LETHAL FIX: Relaxed swing conditions — 30% hit rate means we're TOO strict
-        # Only require 5 of 7 conditions (was all 7)
+        # Only require 4 of 7 conditions (was 5/7, still too strict for recovery markets)
         conditions = {
             "price_above_150_200":  close > sma150 and close > sma200,
             "sma150_above_sma200":  sma150 > sma200,
@@ -796,17 +807,17 @@ def evaluate_swing(symbol: str, df: pd.DataFrame) -> Optional[dict]:
             "within_25pct_high52w": close >= (1 - CONFIG["swing_max_pct_below_52w_high"]) * high_52w,
         }
         passed = sum(conditions.values())
-        # LETHAL FIX: Require only 5/7 conditions (was 7/7)
-        if passed < 5:
+        # LETHAL FIX: Require only 4/7 conditions (was 5/7)
+        if passed < 4:
             failed = [k for k, v in conditions.items() if not v]
             REJECTION_LOG[symbol] = f"Swing: failed trend template ({passed}/7) — {failed}"
             NEAR_MISS_LOG[symbol] = {"score": passed * 10, "reason": f"Trend template {passed}/7", "category": "Swing"}
             return None
 
-        # LETHAL FIX: Relaxed VCP — require only 2 peaks (was 3)
+        # LETHAL FIX: Relaxed VCP — require only 1 peak (was 2, still too strict)
         recent = df["Close"].tail(CONFIG["swing_vcp_lookback_days"]).values
         maxima = argrelextrema(recent, np.greater, order=CONFIG["swing_vcp_peak_order"])[0]
-        if len(maxima) < 2:  # LETHAL FIX: was 3
+        if len(maxima) < 1:  # LETHAL FIX: was 2
             REJECTION_LOG[symbol] = f"Swing: trend OK but VCP not formed ({len(maxima)} peaks)"
             NEAR_MISS_LOG[symbol] = {"score": 60, "reason": f"Trend OK, VCP weak ({len(maxima)} peaks)", "category": "Swing"}
             return None
@@ -863,10 +874,10 @@ def evaluate_swing(symbol: str, df: pd.DataFrame) -> Optional[dict]:
         target = close * (1 + target_pct / 100)
         rr = target_pct / risk_pct if risk_pct > 0 else 0
 
-        # LETHAL FIX: Lower R:R minimum to 2.0 (was 3.0) — 30% hit rate means we're too strict
-        if rr < 2.0:  # LETHAL FIX: was CONFIG["swing_target_rr_min"] which is 3.0
+        # LETHAL FIX: Lower R:R minimum to 1.5 (was 2.0) — empty swing book means we're too strict
+        if rr < 1.5:  # LETHAL FIX: was 2.0
             REJECTION_LOG[symbol] = f"Swing: R:R {rr:.1f} below minimum"
-            NEAR_MISS_LOG[symbol] = {"score": 50, "reason": f"R:R {rr:.1f} below 2.0", "category": "Swing"}
+            NEAR_MISS_LOG[symbol] = {"score": 50, "reason": f"R:R {rr:.1f} below 1.5", "category": "Swing"}
             return None
 
         # LETHAL FIX: Skip market cap check — it causes rate limits and is too strict
@@ -1033,7 +1044,11 @@ def calculate_fair_value_target(symbol: str, close: float, fund: "Fundamentals",
     if pe is not None and pe > 0 and earn_growth is not None and earn_growth > 0:
         implied_eps = close / pe
         capped_growth = max(8.0, min(earn_growth, 30.0))
-        fair_pe = min(capped_growth, peg_ceiling * 12, pe * 1.2)
+        # LETHAL FIX: Correct PEG formula — fair_pe = growth_rate * peg_ceiling
+        # Old buggy code: min(capped_growth, peg_ceiling * 12, pe * 1.2) was comparing
+        # percentage (30) with PE ratio (21.6) — apples to oranges!
+        # Correct: fair_pe = growth_pct * peg_ceiling (e.g., 30% growth * 1.8 PEG = 54 PE)
+        fair_pe = min(capped_growth * peg_ceiling, pe * 1.5)
         fair_pe = max(fair_pe, pe * 1.02)
         estimates["peg_1.0_fair_value"] = (implied_eps * fair_pe / close - 1) * 100
 
@@ -1058,15 +1073,15 @@ def calculate_fair_value_target(symbol: str, close: float, fund: "Fundamentals",
         method = "Fallback (no usable PE/EPS/ROE data) — grade-based estimate, wide band" + extreme_note
 
     # ── Hard floors + safety net (LETHAL FIX: let targets breathe) ──────
-    target_pct_central = max(min(target_pct_central, 60.0), 18.0)  # was 40.0/12.0
-    target_pct_low     = max(min(target_pct_low, 50.0), 12.0)      # was 40.0/8.0
-    target_pct_high    = max(min(target_pct_high, 70.0), max(target_pct_central, 20.0))  # was 50.0/15.0
-
-    # LETHAL FIX: Remove aggressive caps — some trades DO hit +50%+
-    # The old caps (35%/45%) were suppressing realistic targets
-    if grade in ("BUY", "STRONG BUY"):
-        target_pct_central = min(target_pct_central, 55.0)   # was 35.0
-        target_pct_high = min(target_pct_high, 65.0)         # was 45.0
+    # LETHAL FIX: Grade-dependent floors — STRONG BUY deserves higher minimum
+    grade_floors = {"STRONG BUY": 22.0, "BUY": 18.0, "WATCH": 12.0}
+    grade_ceilings = {"STRONG BUY": 65.0, "BUY": 55.0, "WATCH": 40.0}
+    floor = grade_floors.get(grade, 15.0)
+    ceiling = grade_ceilings.get(grade, 50.0)
+    
+    target_pct_central = max(min(target_pct_central, ceiling), floor)
+    target_pct_low     = max(min(target_pct_low, 50.0), max(floor * 0.6, 10.0))
+    target_pct_high    = max(min(target_pct_high, 80.0), max(target_pct_central, floor * 1.3))
 
     if not np.isfinite(target_pct_central) or target_pct_central <= 0:
         log.warning(f"{symbol}: target computed as {target_pct_central} — applying grade-based safety net")
@@ -1074,7 +1089,8 @@ def calculate_fair_value_target(symbol: str, close: float, fund: "Fundamentals",
         target_pct_low = max(target_pct_central - 5, 8.0)
         target_pct_high = target_pct_central + 8
 
-    sl_pct = 12 if grade == "STRONG BUY" else 14 if grade == "BUY" else 16
+    # LETHAL FIX: Grade-dependent stop loss — higher grade = tighter stop (more conviction)
+    sl_pct = 10 if grade == "STRONG BUY" else 12 if grade == "BUY" else 14
     return {
         "target_price": round(close * (1 + target_pct_central / 100), 2),
         "target_price_low": round(close * (1 + target_pct_low / 100), 2),
@@ -1225,6 +1241,18 @@ def evaluate_core(symbol: str, df: pd.DataFrame, fund: Fundamentals) -> Optional
 
         q = g = t = m = 0
         reasons = []
+
+        # LETHAL FIX: Sanity checks for broken data
+        # PE > 100 is almost certainly a data error (reverse split, one-time earnings, etc.)
+        if fund.pe is not None and fund.pe > 100:
+            REJECTION_LOG[symbol] = f"Core: PE {fund.pe}x is suspiciously high — likely data error, skipping"
+            NEAR_MISS_LOG[symbol] = {"score": total, "reason": f"PE {fund.pe}x > 100 — data error", "category": "Core"}
+            return None
+        # Dividend yield > 20% is almost certainly a data error (special dividend, etc.)
+        if fund.div_yield is not None and fund.div_yield > 20:
+            REJECTION_LOG[symbol] = f"Core: Dividend {fund.div_yield}% is suspiciously high — likely data error, skipping"
+            NEAR_MISS_LOG[symbol] = {"score": total, "reason": f"Div {fund.div_yield}% > 20% — data error", "category": "Core"}
+            return None
 
         if fund.roe is not None:
             if fund.roe > 22:   q += 10; reasons.append(f"ROE {fund.roe}% — excellent")
@@ -2178,6 +2206,22 @@ def run_screener(universe_override: Optional[dict[str, pd.DataFrame]] = None,
     core_df = (pd.DataFrame(core_results).sort_values("Score", ascending=False)
                if core_results else pd.DataFrame())
 
+    # LETHAL FIX: Scale down positions if total deployment exceeds portfolio size
+    portfolio = CONFIG["portfolio_size_inr"]
+    max_total_deploy = portfolio * CONFIG.get("max_total_deployment_pct", 0.95)
+    
+    for book_df in [swing_df, core_df]:
+        if book_df.empty or "Deploy_₹" not in book_df.columns:
+            continue
+        total_deploy = book_df["Deploy_₹"].sum()
+        if total_deploy > max_total_deploy:
+            scale_factor = max_total_deploy / total_deploy
+            log.warning(f"Scaling down {book_df.columns[0] if len(book_df.columns) > 0 else 'book'} positions by {scale_factor:.2f}x to fit portfolio")
+            book_df["Deploy_₹"] = (book_df["Deploy_₹"] * scale_factor).round(0)
+            book_df["Shares_To_Buy"] = (book_df["Shares_To_Buy"] * scale_factor).round(0)
+            book_df["Max_Risk_₹"] = (book_df["Max_Risk_₹"] * scale_factor).round(0)
+            book_df["%_of_Portfolio"] = (book_df["%_of_Portfolio"] * scale_factor).round(1)
+
     # FIX: Sector strength filter — only keep stocks in top-performing sectors
     if CONFIG.get("sector_strength_enabled", False) and not swing_df.empty and not core_df.empty:
         # Calculate 1-month return by sector
@@ -2478,7 +2522,12 @@ def print_report(swing_df, core_df, crossover_df, bulk_deals_df, macro_events, m
     print(f"  Portfolio size: ₹{CONFIG['portfolio_size_inr']:,.0f} | "
           f"Risk per trade: {CONFIG['risk_per_trade_pct']*100:.1f}%")
     if total_deploy > 0:
-        print(f"  Deployment %: {total_deploy/CONFIG['portfolio_size_inr']*100:.1f}% of portfolio")
+        deploy_pct = total_deploy/CONFIG['portfolio_size_inr']*100
+        print(f"  Deployment %: {deploy_pct:.1f}% of portfolio", end="")
+        if deploy_pct > 100:
+            print(f"  ⚠️  OVER-ALLOCATED! Reduce position sizes or number of picks.")
+        else:
+            print()
 
     # FIX Task 1: show near-miss stocks ranked by closeness to passing
     if NEAR_MISS_LOG:
