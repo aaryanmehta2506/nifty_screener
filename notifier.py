@@ -68,6 +68,15 @@ def send_email(subject: str, html_body: str) -> bool:
         return False
 
 
+def _fmt(val, fmt=".2f"):
+    """Safely format a value, returning '—' if missing/NaN."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return "—"
+    if isinstance(val, (int, float)):
+        return f"{val:{fmt}}"
+    return str(val)
+
+
 def build_message() -> tuple[str, str]:
     """Return (telegram_text, email_html) for today's picks."""
     swing = pd.read_csv("swing_book_3_6mo.csv").head(5)
@@ -80,37 +89,59 @@ def build_message() -> tuple[str, str]:
         lines.append("*Swing (3-6mo):*")
         for i, row in swing.iterrows():
             lines.append(
-                f"{i+1}. {row.get('Symbol','?')} | Score: {row.get('Score','?')} | {row.get('Market_Regime','?')}"
+                f"{i+1}. {row.get('Symbol','?')} | Score: {row.get('Score','?')} | "
+                f"CMP: ₹{_fmt(row.get('CMP'), '.1f')} | Target: ₹{_fmt(row.get('Target'), '.1f')} | "
+                f"SL: ₹{_fmt(row.get('Stop_Loss'), '.1f')} | R:R: {_fmt(row.get('RR_Ratio'), '.1f')}"
             )
         lines.append("")
     if not core.empty:
         lines.append("*Core (1-2yr):*")
         for i, row in core.iterrows():
             lines.append(
-                f"{i+1}. {row.get('Symbol','?')} | Score: {row.get('Score','?')} | {row.get('Market_Regime','?')}"
+                f"{i+1}. {row.get('Symbol','?')} | Score: {row.get('Score','?')} | "
+                f"CMP: ₹{_fmt(row.get('CMP'), '.1f')} | Target: ₹{_fmt(row.get('Target'), '.1f')} | "
+                f"SL: ₹{_fmt(row.get('Stop_Loss'), '.1f')} | R:R: {_fmt(row.get('RR_Ratio'), '.1f')}"
             )
     telegram_text = "\n".join(lines)
 
     # ── Email (HTML) ──────────────────────────────────────────────────
-    swing_rows = ""
-    for i, row in swing.iterrows():
-        swing_rows += f"""
-        <tr>
-          <td>{i+1}</td>
-          <td><strong>{row.get('Symbol','?')}</strong></td>
-          <td>{row.get('Score','?')}</td>
-          <td>{row.get('Market_Regime','?')}</td>
-        </tr>"""
+    def _swing_rows():
+        if swing.empty:
+            return '<tr><td colspan="8">No picks today</td></tr>'
+        rows = []
+        for i, row in swing.iterrows():
+            rows.append(f"""
+            <tr>
+              <td>{i+1}</td>
+              <td><strong>{row.get('Symbol','?')}</strong></td>
+              <td>{_fmt(row.get('Score'), '.0f')}</td>
+              <td>₹{_fmt(row.get('CMP'), '.1f')}</td>
+              <td>₹{_fmt(row.get('Target'), '.1f')}</td>
+              <td>₹{_fmt(row.get('Stop_Loss'), '.1f')}</td>
+              <td>{_fmt(row.get('Profit_%'), '.1f')}%</td>
+              <td>{_fmt(row.get('RR_Ratio'), '.1f')}</td>
+            </tr>""")
+        return "".join(rows)
 
-    core_rows = ""
-    for i, row in core.iterrows():
-        core_rows += f"""
-        <tr>
-          <td>{i+1}</td>
-          <td><strong>{row.get('Symbol','?')}</strong></td>
-          <td>{row.get('Score','?')}</td>
-          <td>{row.get('Market_Regime','?')}</td>
-        </tr>"""
+    def _core_rows():
+        if core.empty:
+            return '<tr><td colspan="10">No picks today</td></tr>'
+        rows = []
+        for i, row in core.iterrows():
+            rows.append(f"""
+            <tr>
+              <td>{i+1}</td>
+              <td><strong>{row.get('Symbol','?')}</strong></td>
+              <td>{_fmt(row.get('Score'), '.0f')}</td>
+              <td>₹{_fmt(row.get('CMP'), '.1f')}</td>
+              <td>₹{_fmt(row.get('Target'), '.1f')}</td>
+              <td>₹{_fmt(row.get('Stop_Loss'), '.1f')}</td>
+              <td>{_fmt(row.get('Profit_%'), '.1f')}%</td>
+              <td>{_fmt(row.get('Risk_%'), '.1f')}%</td>
+              <td>{_fmt(row.get('RR_Ratio'), '.1f')}</td>
+              <td>{_fmt(row.get('Confidence_%'), '.0f')}%</td>
+            </tr>""")
+        return "".join(rows)
 
     email_html = f"""<!DOCTYPE html>
 <html>
@@ -118,13 +149,14 @@ def build_message() -> tuple[str, str]:
   <meta charset="UTF-8">
   <style>
     body {{ font-family: Arial, sans-serif; background: #f4f4f4; padding: 20px; }}
-    .container {{ max-width: 600px; margin: 0 auto; background: #fff; padding: 20px; border-radius: 8px; }}
+    .container {{ max-width: 800px; margin: 0 auto; background: #fff; padding: 20px; border-radius: 8px; }}
     h1 {{ color: #1a73e8; }}
     h2 {{ color: #333; border-bottom: 2px solid #1a73e8; padding-bottom: 5px; }}
     table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
     th {{ background: #1a73e8; color: #fff; padding: 8px; text-align: left; }}
     td {{ padding: 8px; border-bottom: 1px solid #ddd; }}
     .footer {{ margin-top: 20px; font-size: 12px; color: #888; }}
+    .details {{ margin-top: 20px; padding: 15px; background: #f9f9f9; border-radius: 5px; }}
   </style>
 </head>
 <body>
@@ -134,14 +166,20 @@ def build_message() -> tuple[str, str]:
 
     <h2>Swing (3-6 months)</h2>
     <table>
-      <tr><th>#</th><th>Symbol</th><th>Score</th><th>Regime</th></tr>
-      {swing_rows if swing_rows else '<tr><td colspan="4">No picks today</td></tr>'}
+      <tr>
+        <th>#</th><th>Symbol</th><th>Score</th><th>CMP</th><th>Target</th>
+        <th>Stop Loss</th><th>Profit %</th><th>R:R</th>
+      </tr>
+      {_swing_rows()}
     </table>
 
     <h2>Core (1-2 years)</h2>
     <table>
-      <tr><th>#</th><th>Symbol</th><th>Score</th><th>Regime</th></tr>
-      {core_rows if core_rows else '<tr><td colspan="4">No picks today</td></tr>'}
+      <tr>
+        <th>#</th><th>Symbol</th><th>Score</th><th>CMP</th><th>Target</th>
+        <th>Stop Loss</th><th>Profit %</th><th>Risk %</th><th>R:R</th><th>Confidence</th>
+      </tr>
+      {_core_rows()}
     </table>
 
     <div class="footer">

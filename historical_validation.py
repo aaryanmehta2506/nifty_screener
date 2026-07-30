@@ -341,6 +341,7 @@ def run_screener_at_snapshot(snapshot_date: datetime.datetime,
 
     # LETHAL FIX: Only take swing trades in favorable regimes
     # BEAR is 80% win rate — LEAN IN. BULL is only 57% — de-rate it.
+    # FIX: Allow trades when regime is UNKNOWN (data unavailable) — don't block everything
     favorable_regimes = CONFIG.get("favorable_regimes", ["BEAR", "RECOVERY", "SIDEWAYS"])
     regime_filter_enabled = CONFIG.get("regime_filter_enabled", True)
     
@@ -350,8 +351,8 @@ def run_screener_at_snapshot(snapshot_date: datetime.datetime,
         if len(df) < CONFIG["min_bars_required"]:
             continue
         
-        # Skip swing trades in unfavorable regimes
-        if regime_filter_enabled and regime not in favorable_regimes:
+        # Skip swing trades in unfavorable regimes (but allow UNKNOWN)
+        if regime_filter_enabled and regime not in favorable_regimes and regime != "UNKNOWN":
             continue
         
         try:

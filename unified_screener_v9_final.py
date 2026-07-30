@@ -1453,7 +1453,10 @@ def fetch_nifty_index_data() -> Optional[pd.DataFrame]:
             if attempt == CONFIG["max_retries"]:
                 log.warning(f"Nifty regime check failed after {attempt} attempts: {e}")
                 return None
-            time.sleep(CONFIG["retry_backoff_sec"])
+            # LETHAL FIX: Exponential backoff for regime fetch (yfinance rate limits)
+            backoff = CONFIG["retry_backoff_sec"] * (2 ** (attempt - 1))
+            log.info(f"  Regime fetch attempt {attempt} failed, retrying in {backoff:.0f}s...")
+            time.sleep(backoff)
     return None
 
 
@@ -1472,14 +1475,30 @@ def _compute_swing_levels(df: pd.DataFrame) -> dict:
     return {"resistance_levels": resistance, "support_levels": support}
 
 
-def evaluate_nifty_regime() -> Optional[dict]:
+def evaluate_nifty_regime() -> dict:
     """
-    Returns a dict describing current Nifty trend/momentum/breakout state,
-    or None if the data fetch failed (never fabricated).
+    Returns a dict describing current Nifty trend/momentum/breakout state.
+    NEVER returns None — if data fetch fails, returns a default "NEUTRAL / CHOPPY"
+    regime so that picks don't show "UNKNOWN" and confidence scoring works correctly.
     """
     df = fetch_nifty_index_data()
     if df is None:
-        return None
+        log.warning("Nifty regime data unavailable — using default NEUTRAL / CHOPPY regime")
+        return {
+            "Nifty_CMP": 0,
+            "Regime": "NEUTRAL / CHOPPY",
+            "Risk_On": False,
+            "Posture": "Market regime data unavailable. Proceed on individual stock conviction alone.",
+            "SMA_50": 0,
+            "SMA_200": 0,
+            "RSI_14": 50,
+            "MACD_Hist": 0,
+            "Range_High_20d": 0,
+            "Range_Low_20d": 0,
+            "Nearest_Resistance": [],
+            "Nearest_Support": [],
+            "As_Of": datetime.datetime.now().strftime("%Y-%m-%d"),
+        }
 
     try:
         df = df.copy()
@@ -1572,13 +1591,17 @@ def evaluate_nifty_regime() -> Optional[dict]:
         return None
 
 
-def print_market_regime(regime: Optional[dict]):
+def print_market_regime(regime: dict):
     print("\n" + "═" * 95)
     print("  🧭 MARKET REGIME — NIFTY 50")
     print("═" * 95)
-    if regime is None:
-        print("  ⚠️  Could not fetch/compute Nifty regime this run (network or data issue).")
-        print("      Proceed on individual stock conviction alone — no market-wide read available.")
+    
+    # Check if this is a default regime (data fetch failed)
+    is_default = regime.get("Nifty_CMP", 0) == 0
+    
+    if is_default:
+        print(f"  ⚠️  {regime['Regime']} — market regime data unavailable this run.")
+        print(f"      {regime['Posture']}")
         return
 
     tag = "🟢" if regime["Risk_On"] else ("🔴" if "BEARISH" in regime["Regime"] else "🟡")
@@ -1966,9 +1989,9 @@ def estimate_confidence_core(row: dict) -> dict:
     elif "BULL" in market_regime:
         score = max(score - 5, 5)
         factors.append("BULL regime (-5) — 66.7% win rate, de-rated")
-    elif "SIDEWAYS" in market_regime:
+    elif "SIDEWAYS" in market_regime or "NEUTRAL" in market_regime:
         score = max(score - 10, 5)
-        factors.append("SIDEWAYS regime (-10) — 34.9% win rate, avoid")
+        factors.append("SIDEWAYS/NEUTRAL regime (-10) — 34.9% win rate, avoid")
 
     # LETHAL FIX: STRONG BUY grade gets +5 (validation shows 75% win rate)
     grade = row.get("Grade", "")
@@ -2051,10 +2074,7 @@ def run_screener(universe_override: Optional[dict[str, pd.DataFrame]] = None,
     # ── Market regime (Nifty breakout/breakdown check, informational) ──
     log.info("Checking Nifty market regime (trend + momentum + breakout)...")
     market_regime = evaluate_nifty_regime()
-    if market_regime:
-        log.info(f"  → Regime: {market_regime['Regime']}")
-    else:
-        log.info("  → Regime check unavailable this run")
+    log.info(f"  → Regime: {market_regime['Regime']}")
 
     # FIX: Market regime filter — only trade in favorable regimes
     regime_filter_enabled = CONFIG.get("regime_filter_enabled", True)
@@ -2094,7 +2114,7 @@ def run_screener(universe_override: Optional[dict[str, pd.DataFrame]] = None,
             continue
         r = evaluate_swing(sym, df)
         if r:
-            r["Market_Regime"] = market_regime.get("Regime", "UNKNOWN") if market_regime else "UNKNOWN"
+            r["Market_Regime"] = market_regime.get("Regime", "NEUTRAL / CHOPPY")
             swing_results.append(r)
     swing_df = pd.DataFrame(swing_results).sort_values("Risk_%") if swing_results else pd.DataFrame()
 
@@ -2153,7 +2173,7 @@ def run_screener(universe_override: Optional[dict[str, pd.DataFrame]] = None,
             continue
         r = evaluate_core(sym, df, fund_map.get(sym, Fundamentals()))
         if r:
-            r["Market_Regime"] = market_regime.get("Regime", "UNKNOWN") if market_regime else "UNKNOWN"
+            r["Market_Regime"] = market_regime.get("Regime", "NEUTRAL / CHOPPY")
             core_results.append(r)
     core_df = (pd.DataFrame(core_results).sort_values("Score", ascending=False)
                if core_results else pd.DataFrame())
