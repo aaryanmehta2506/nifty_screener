@@ -250,12 +250,12 @@ CONFIG = {
     "eps_growth_extreme_threshold": 200,        # Task 2: above this = one-off/base effect
 
     # Output
-    "csv_output_swing": "/mnt/user-data/outputs/swing_book_3_6mo.csv",
-    "csv_output_core": "/mnt/user-data/outputs/core_book_1_2yr.csv",
-    "csv_output_crossover": "/mnt/user-data/outputs/crossover_highest_conviction.csv",
-    "csv_output_bulkdeals": "/mnt/user-data/outputs/bulk_deals_matched.csv",
-    "csv_output_all_swing": "/mnt/user-data/outputs/all_swing_passes.csv",
-    "csv_output_all_core": "/mnt/user-data/outputs/all_core_passes.csv",
+    "csv_output_swing": "swing_book_3_6mo.csv",
+    "csv_output_core": "core_book_1_2yr.csv",
+    "csv_output_crossover": "crossover_highest_conviction.csv",
+    "csv_output_bulkdeals": "bulk_deals_matched.csv",
+    "csv_output_all_swing": "all_swing_passes.csv",
+    "csv_output_all_core": "all_core_passes.csv",
 }
 
 
