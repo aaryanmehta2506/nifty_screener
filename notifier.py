@@ -21,12 +21,21 @@ EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
 EMAIL_RECIPIENT = os.getenv("EMAIL_RECIPIENT", "")
 
 
+def escape_markdown(text: str) -> str:
+    """Escape Telegram Markdown special characters."""
+    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for char in special_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
+
+
 def send_telegram(text: str) -> bool:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("Telegram not configured — skipping")
         return False
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
+    escaped_text = escape_markdown(text)
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": escaped_text, "parse_mode": "Markdown"}
     try:
         r = requests.post(url, json=payload, timeout=30)
         r.raise_for_status()
