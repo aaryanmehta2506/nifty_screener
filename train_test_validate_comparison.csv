@@ -1,0 +1,4 @@
+Period,CAGR_%,Sharpe,Sortino,Calmar,MaxDD_%,Win_Rate_%,Profit_Factor,N_Trades,Meets_CAGR>18%,Meets_Sharpe>1.2,Meets_MaxDD<20%,Meets_WinRate>50%
+TRAIN (2020-2022 diagnostic only),611.62,4.89,11.1,123.35,-4.96,49.0,8.61,104,True,True,True,False
+"TEST (2023-2025, real out-of-sample)",18376.27,10.44,47.9,3722.08,-4.94,46.5,2.78,114,True,True,True,False
+"VALIDATE (2025-2026, real out-of-sample)",6892.75,9.01,18.35,1919.38,-3.59,56.9,3.28,58,True,True,True,True

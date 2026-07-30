@@ -1,0 +1,5 @@
+Confidence_Bucket,Confidence_Low,Confidence_High,Avg_Confidence_%,N_Trades,N_Wins,N_Losses,Actual_Hit_Rate_%,Expected_Hit_Rate_%,Regime_Adj_Expected_%,Calibration_Error_%,Regime_Cal_Error_%,Avg_Win_%,Avg_Loss_%,Avg_Return_%,Well_Calibrated
+Medium-Low (30-50%),30,50,41.1,32,11,21,34.4,41.1,31.6,6.8,2.8,17.7,-15.47,-4.07,YES
+Medium (50-70%),50,70,59.9,104,80,24,76.9,59.9,46.8,17.0,30.2,16.41,-14.3,9.32,NO
+High (70-85%),70,85,75.1,78,30,48,38.5,75.1,60.5,36.7,22.0,18.45,-9.32,1.36,NO
+Very High (85-100%),85,100,85.0,36,17,19,47.2,85.0,67.5,37.8,20.3,16.91,-11.3,2.02,NO

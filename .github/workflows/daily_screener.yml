@@ -1,0 +1,41 @@
+name: Daily Screener
+
+on:
+  schedule:
+    # 9:00 AM IST = 3:30 AM UTC
+    - cron: '30 3 * * 1-5'  # Mon-Fri only
+  workflow_dispatch:  # allow manual trigger
+
+jobs:
+  run-screener:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install yfinance pandas pandas_ta numpy scipy requests feedparser --break-system-packages
+
+      - name: Run screener
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python unified_screener_v9_final.py
+          python notifier.py
+
+      - name: Upload CSVs as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-picks
+          path: |
+            swing_book_3_6mo.csv
+            core_book_1_2yr.csv
+            all_swing_passes.csv
+            all_core_passes.csv
+          retention-days: 7

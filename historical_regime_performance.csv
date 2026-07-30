@@ -1,0 +1,5 @@
+Market_Regime,N_Trades,N_Wins,N_Losses,Hit_Rate_%,Avg_Return_%,Avg_Win_%,Avg_Loss_%,Expectancy_%,Avg_Confidence_%,Status
+BULL,108,72,36,66.7,5.99,16.05,-14.11,5.99,63.6,GOOD
+SIDEWAYS,106,37,69,34.9,-1.54,17.16,-11.56,-1.54,67.6,POOR
+RECOVERY,28,25,3,89.3,16.92,19.5,-4.58,16.92,63.7,EXCELLENT
+BEAR,8,4,4,50.0,7.56,17.7,-2.57,7.56,80.5,WEAK
