@@ -1486,8 +1486,8 @@ def evaluate_nifty_regime() -> Optional[dict]:
         df["SMA_FAST"] = sma(df["Close"], length=CONFIG["regime_sma_fast"])
         df["SMA_SLOW"] = sma(df["Close"], length=CONFIG["regime_sma_slow"])
         df["RSI"] = rsi(df["Close"], length=CONFIG["regime_rsi_period"])
-        macd = macd(df["Close"])
-        df = pd.concat([df, macd], axis=1)
+        macd_df = macd(df["Close"])
+        df = pd.concat([df, macd_df], axis=1)
         hist_col = [c for c in df.columns if c.startswith("MACDh_")][0]
 
         if df[["SMA_SLOW", "RSI", hist_col]].iloc[-1].isna().any():
