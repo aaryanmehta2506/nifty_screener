@@ -1498,7 +1498,7 @@ def evaluate_nifty_regime() -> Optional[dict]:
         sma_fast = float(df["SMA_FAST"].iloc[-1])
         sma_slow = float(df["SMA_SLOW"].iloc[-1])
         sma_fast_5d_ago = float(df["SMA_FAST"].iloc[-6])
-        rsi = float(df["RSI"].iloc[-1])
+        rsi_val = float(df["RSI"].iloc[-1])
         macd_hist = float(df[hist_col].iloc[-1])
         macd_hist_prev = float(df[hist_col].iloc[-2])
 
@@ -1511,9 +1511,9 @@ def evaluate_nifty_regime() -> Optional[dict]:
         trend_up = close > sma_fast > sma_slow
         trend_down = close < sma_fast < sma_slow
         sma_fast_rising = sma_fast > sma_fast_5d_ago
-        momentum_bullish = (rsi >= CONFIG["regime_rsi_bullish"] and macd_hist > 0
+        momentum_bullish = (rsi_val >= CONFIG["regime_rsi_bullish"] and macd_hist > 0
                              and macd_hist > macd_hist_prev)
-        momentum_bearish = (rsi <= CONFIG["regime_rsi_bearish"] and macd_hist < 0
+        momentum_bearish = (rsi_val <= CONFIG["regime_rsi_bearish"] and macd_hist < 0
                              and macd_hist < macd_hist_prev)
 
         if breakout_up and momentum_bullish:
@@ -1521,7 +1521,7 @@ def evaluate_nifty_regime() -> Optional[dict]:
             posture = ("Momentum + trend confirm a break above the recent "
                        f"{lb}-day range high (₹{range_high:,.0f}). Historically "
                        "supportive of adding new swing exposure, not a guarantee.")
-        elif trend_up and sma_fast_rising and rsi >= 50:
+        elif trend_up and sma_fast_rising and rsi_val >= 50:
             regime = "BULLISH — TREND INTACT"
             posture = (f"Price above both {CONFIG['regime_sma_fast']}/"
                        f"{CONFIG['regime_sma_slow']}-DMA, uptrend intact, no breakout yet. "
