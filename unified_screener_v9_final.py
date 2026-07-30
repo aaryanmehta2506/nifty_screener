@@ -190,12 +190,12 @@ CONFIG = {
     # ── CORE BOOK (Quality+Growth+Technical+Momentum) ───────────────────
     "core_score_strong_buy": 65,       # LETHAL FIX: was 75 (too strict), catch more winners
     "core_score_buy": 50,              # LETHAL FIX: was 60 (too strict), catch good ones
-    "core_score_watch": 40,            # LETHAL FIX: was 50 (too strict), lower bar
+    "core_score_watch": 30,            # LETHAL FIX: was 40 (too strict for recovery markets), lower bar
     "core_rsi_ideal_low": 44,
     "core_rsi_ideal_high": 62,
     "core_reject_earnings_growth_below": -25,
     "core_min_market_cap_cr": 5000,    # FIX: only large caps for core (reduce volatility)
-    "core_min_momentum_6m": 10,        # FIX: require positive 6-month momentum
+    "core_min_momentum_6m": 0,         # LETHAL FIX: allow zero/negative 6M return (recovery markets)
 
     # ── QUALITY FILTERS ──────────────────────────────────────────────────
     "max_picks_per_book_per_snapshot": 5,  # FIX: limit to top 5 picks per book for 80-90% accuracy
@@ -2155,13 +2155,13 @@ def run_screener(universe_override: Optional[dict[str, pd.DataFrame]] = None,
         total_liquid = len(liquid)
         consecutive_errors = 0
         # LETHAL FIX: Batch fundamentals fetch with aggressive rate limiting
-        # Only fetch for top 100 stocks by market cap proxy (volume * price)
-        # This reduces yfinance calls from ~500 to ~100
+        # Fetch for top 150 stocks by market cap proxy (volume * price)
+        # This balances coverage vs rate limits
         liquid_items = list(liquid.items())
-        # Sort by volume * price as proxy for market cap (larger = more important)
+        # Sort by volume * price as proxy for market cap (largest = most important)
         liquid_items.sort(key=lambda x: x[1]["Volume"].iloc[-20:].mean() * x[1]["Close"].iloc[-1], reverse=True)
-        # Only fetch fundamentals for top 100 stocks
-        fetch_limit = min(100, len(liquid_items))
+        # Fetch fundamentals for top 150 stocks (was 100 — too few, missed screened stocks)
+        fetch_limit = min(150, len(liquid_items))
         fetch_symbols = [sym for sym, _ in liquid_items[:fetch_limit]]
         
         log.info(f"  Fetching fundamentals for top {fetch_limit} stocks (by volume*price proxy)...")
@@ -2189,7 +2189,7 @@ def run_screener(universe_override: Optional[dict[str, pd.DataFrame]] = None,
                 log.info(f"  Fundamentals fetched: {i}/{fetch_limit}")
             # Gentle pause every 5 stocks to avoid rate limits
             if i % 5 == 0:
-                time.sleep(2.0)  # LETHAL FIX: increased from 1.0 to 2.0 seconds
+                time.sleep(2.5)  # LETHAL FIX: increased from 2.0 to 2.5 seconds for 150 stocks
         
         # LETHAL FIX: For remaining stocks, use empty fundamentals (score will be lower but won't crash)
         for sym, _ in liquid_items[fetch_limit:]:
