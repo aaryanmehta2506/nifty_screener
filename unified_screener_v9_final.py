@@ -1537,7 +1537,7 @@ def evaluate_nifty_regime() -> Optional[dict]:
             posture = (f"Price below both {CONFIG['regime_sma_fast']}/"
                        f"{CONFIG['regime_sma_slow']}-DMA. Weak backdrop — favors "
                        "being selective or holding off new swing entries.")
-        elif close > sma_fast and not trend_down and (rsi >= 45 or sma_fast_rising):
+        elif close > sma_fast and not trend_down and (rsi_val >= 45 or sma_fast_rising):
             regime = "RECOVERY"
             posture = (f"Price above {CONFIG['regime_sma_fast']}-DMA (₹{sma_fast:,.0f}) "
                        "with improving momentum — recovering from recent weakness but "
@@ -1559,7 +1559,7 @@ def evaluate_nifty_regime() -> Optional[dict]:
             "Posture": posture,
             f"SMA_{CONFIG['regime_sma_fast']}": round(sma_fast, 1),
             f"SMA_{CONFIG['regime_sma_slow']}": round(sma_slow, 1),
-            "RSI_14": round(rsi, 1),
+            "RSI_14": round(rsi_val, 1),
             "MACD_Hist": round(macd_hist, 2),
             f"Range_High_{lb}d": round(range_high, 1),
             f"Range_Low_{lb}d": round(range_low, 1),
