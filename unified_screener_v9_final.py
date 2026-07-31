@@ -168,7 +168,7 @@ CONFIG = {
     "swing_min_price_above_52w_low_mult": 1.30,
     "swing_max_pct_below_52w_high": 0.25,
     "swing_atr_period": 14,
-    "swing_atr_sl_multiplier": 1.5,    # LETHAL FIX: back to 1.5x ATR (was 1.2x — too tight, caused whipsaws)
+    "swing_atr_sl_multiplier": 1.2,    # FIX: 1.2x ATR for tighter stops (was 1.5x — too wide, increased risk)
     "swing_vcp_lookback_days": 60,
     "swing_vcp_min_peaks": 2,          # LETHAL FIX: 2 peaks (was 3 — too strict, 30% hit rate)
     "swing_vcp_peak_order": 5,
@@ -176,8 +176,8 @@ CONFIG = {
     "swing_min_volume_surge": 1.3,     # FIX: require volume confirmation
     "swing_min_sma20_above": False,    # LETHAL FIX: disabled (was True — too strict)
     "swing_min_market_cap_cr": 0,      # LETHAL FIX: disabled (was 5000 — too strict, causes rate limits)
-    "swing_profit_booking_rr": 3.0,    # LETHAL FIX: book at 3x R:R (let winners run longer, was 2.0)
-    "swing_profit_booking_2_rr": 5.0,  # LETHAL FIX: second tranche at 5x R:R (was 4.0)
+    "swing_profit_booking_rr": 2.0,    # FIX: book at 2x R:R (was 3.0 — too early per guide)
+    "swing_profit_booking_2_rr": 4.0,  # FIX: second tranche at 4x R:R (was 5.0 — too early per guide)
 
     # ── SECTOR STRENGTH FILTER ─────────────────────────────────────────
     "sector_strength_enabled": True,   # FIX: only trade top-performing sectors
@@ -190,7 +190,7 @@ CONFIG = {
     # ── CORE BOOK (Quality+Growth+Technical+Momentum) ───────────────────
     "core_score_strong_buy": 65,       # LETHAL FIX: was 75 (too strict), catch more winners
     "core_score_buy": 50,              # LETHAL FIX: was 60 (too strict), catch good ones
-    "core_score_watch": 30,            # LETHAL FIX: was 40 (too strict for recovery markets), lower bar
+    "core_score_watch": 40,            # FIX: was 30 (too strict), raise to catch more opportunities
     "core_rsi_ideal_low": 44,
     "core_rsi_ideal_high": 62,
     "core_reject_earnings_growth_below": -25,
@@ -204,8 +204,8 @@ CONFIG = {
     # ── POSITION SIZING ──────────────────────────────────────────────────
     # CHANGE THESE TWO TO MATCH YOUR ACTUAL PORTFOLIO
     "portfolio_size_inr": 136000,      # your current portfolio value
-    "risk_per_trade_pct": 0.035,       # LETHAL FIX: 3.5% risk (was 2.5%) — bigger positions for 50%+ returns
-    "max_single_position_pct": 0.25,   # LETHAL FIX: 25% max (was 18%) — higher conviction = bigger size
+    "risk_per_trade_pct": 0.025,       # FIX: 2.5% risk (was 3.5%) — optimal per Kelly Criterion
+    "max_single_position_pct": 0.18,   # FIX: 18% max (was 25%) — optimal per Kelly Criterion
     "max_total_deployment_pct": 0.95,  # LETHAL FIX: cap total deployment at 95% of portfolio (prevent over-allocation)
 
     # ── BULK/BLOCK DEALS ──────────────────────────────────────────────────
@@ -1072,16 +1072,15 @@ def calculate_fair_value_target(symbol: str, close: float, fund: "Fundamentals",
         target_pct_high = round(base * 1.4, 1)
         method = "Fallback (no usable PE/EPS/ROE data) — grade-based estimate, wide band" + extreme_note
 
-    # ── Hard floors + safety net (LETHAL FIX: let targets breathe) ──────
-    # LETHAL FIX: Grade-dependent floors — STRONG BUY deserves higher minimum
+    # ── Hard floors + safety net (FIX: let targets breathe up to 60%) ─────
+    # FIX: Grade-dependent floors — STRONG BUY deserves higher minimum
     grade_floors = {"STRONG BUY": 22.0, "BUY": 18.0, "WATCH": 12.0}
-    grade_ceilings = {"STRONG BUY": 65.0, "BUY": 55.0, "WATCH": 40.0}
     floor = grade_floors.get(grade, 15.0)
-    ceiling = grade_ceilings.get(grade, 50.0)
     
-    target_pct_central = max(min(target_pct_central, ceiling), floor)
-    target_pct_low     = max(min(target_pct_low, 50.0), max(floor * 0.6, 10.0))
-    target_pct_high    = max(min(target_pct_high, 80.0), max(target_pct_central, floor * 1.3))
+    # FIX: Allow targets up to 60% (was capped at 35-55% depending on grade)
+    target_pct_central = max(min(target_pct_central, 60.0), floor)
+    target_pct_low     = max(min(target_pct_low, 60.0), max(floor * 0.6, 8.0))
+    target_pct_high    = max(min(target_pct_high, 60.0), max(target_pct_central, floor * 1.3))
 
     if not np.isfinite(target_pct_central) or target_pct_central <= 0:
         log.warning(f"{symbol}: target computed as {target_pct_central} — applying grade-based safety net")
@@ -2005,21 +2004,19 @@ def estimate_confidence_core(row: dict) -> dict:
     score = min(base_score, 70)  # LETHAL FIX: cap at 70% (was 85%)
     factors = [f"Base: model score {base_score}/100 — confidence capped at 70% (calibrated)"]
 
-    # LETHAL FIX: Only add bonuses for things that ACTUALLY predict wins
-    # From validation: RECOVERY regime has 89.3% win rate — BIG bonus
+    # FIX: Regime-based adjustments per guide — BEAR has 80% win rate, BULL has 57%
     market_regime = row.get("Market_Regime", "")
-    if "RECOVERY" in market_regime:
-        score = min(score + 10, 70)
-        factors.append("RECOVERY regime (+10) — 89.3% historical win rate")
-    elif "BEAR" in market_regime:
-        score = min(score + 5, 70)
-        factors.append("BEAR regime (+5) — 50% win rate, moderate")
+    if "BEAR" in market_regime:
+        score = min(score + 15, 70)
+        factors.append("BEAR regime active — high conviction (+15)")
     elif "BULL" in market_regime:
         score = max(score - 5, 5)
-        factors.append("BULL regime (-5) — 66.7% win rate, de-rated")
+        factors.append("BULL regime active — de-rate due to lower accuracy (-5)")
+    elif "RECOVERY" in market_regime:
+        score = min(score + 5, 70)
+        factors.append("RECOVERY regime active — good opportunity (+5)")
     elif "SIDEWAYS" in market_regime or "NEUTRAL" in market_regime:
-        score = max(score - 10, 5)
-        factors.append("SIDEWAYS/NEUTRAL regime (-10) — 34.9% win rate, avoid")
+        factors.append("SIDEWAYS/NEUTRAL regime active — neutral opportunity")
 
     # LETHAL FIX: STRONG BUY grade gets +5 (validation shows 75% win rate)
     grade = row.get("Grade", "")
@@ -2057,14 +2054,15 @@ def estimate_confidence_core(row: dict) -> dict:
     return {"confidence_pct": score, "factors": factors}
 
 
-def attach_confidence(swing_df: pd.DataFrame, core_df: pd.DataFrame):
+def attach_confidence(swing_df: pd.DataFrame, core_df: pd.DataFrame,
+                      market_regime: Optional[dict] = None):
     if not swing_df.empty:
         conf = swing_df.apply(lambda r: estimate_confidence_swing(r.to_dict()), axis=1)
         swing_df = swing_df.copy()
         swing_df["Confidence_%"] = conf.apply(lambda c: c["confidence_pct"])
         swing_df["Confidence_Factors"] = conf.apply(lambda c: " | ".join(c["factors"]))
     if not core_df.empty:
-        conf = core_df.apply(lambda r: estimate_confidence_core(r.to_dict()), axis=1)
+        conf = core_df.apply(lambda r: estimate_confidence_core(r.to_dict(), market_regime), axis=1)
         core_df = core_df.copy()
         core_df["Confidence_%"] = conf.apply(lambda c: c["confidence_pct"])
         core_df["Confidence_Factors"] = conf.apply(lambda c: " | ".join(c["factors"]))
@@ -2090,6 +2088,17 @@ def run_screener(universe_override: Optional[dict[str, pd.DataFrame]] = None,
         cached_results = get_screener_results("latest", ttl_days=1)
         if cached_results is not None:
             log.info("✓ Using cached screener results (disk cache hit)")
+            # FIX: Still export CSVs from cached results so notifier doesn't crash
+            try:
+                swing_df = pd.DataFrame(cached_results[0]) if cached_results[0] else pd.DataFrame()
+                core_df = pd.DataFrame(cached_results[1]) if cached_results[1] else pd.DataFrame()
+                crossover_df = pd.DataFrame(cached_results[2]) if len(cached_results) > 2 and cached_results[2] else pd.DataFrame()
+                if not swing_df.empty: swing_df.to_csv(CONFIG["csv_output_swing"], index=False)
+                if not core_df.empty: core_df.to_csv(CONFIG["csv_output_core"], index=False)
+                if not crossover_df.empty: crossover_df.to_csv(CONFIG["csv_output_crossover"], index=False)
+                log.info("✓ CSVs exported from cache")
+            except Exception as e:
+                log.warning(f"CSV export from cache skipped: {e}")
             return tuple(cached_results)
     
     log.info("═" * 75)
@@ -2113,6 +2122,9 @@ def run_screener(universe_override: Optional[dict[str, pd.DataFrame]] = None,
         is_favorable = any(fav in current_regime for fav in favorable_regimes)
         if not is_favorable:
             log.warning(f"Market regime is {current_regime} — skipping all trades this period")
+            # FIX: Export empty CSVs so notifier doesn't crash
+            pd.DataFrame().to_csv(CONFIG["csv_output_swing"], index=False)
+            pd.DataFrame().to_csv(CONFIG["csv_output_core"], index=False)
             return None, None, None, None, market_regime
 
     # ── Macro context (informational, doesn't affect scoring) ──
@@ -2129,6 +2141,9 @@ def run_screener(universe_override: Optional[dict[str, pd.DataFrame]] = None,
     if not price_data:
         log.error("No usable price data for ANY symbol. Aborting.")
         log.error("This usually means network access to Yahoo Finance is blocked.")
+        # FIX: Export empty CSVs so notifier doesn't crash
+        pd.DataFrame().to_csv(CONFIG["csv_output_swing"], index=False)
+        pd.DataFrame().to_csv(CONFIG["csv_output_core"], index=False)
         return None, None, None, None, market_regime
 
     liquid = {s: df for s, df in price_data.items() if passes_liquidity_gate(s, df)}
@@ -2285,7 +2300,7 @@ def run_screener(universe_override: Optional[dict[str, pd.DataFrame]] = None,
     # Confidence_% and News columns rather than being built too early
     # and silently missing them.
     log.info("Attaching confidence/probability estimates...")
-    swing_df, core_df = attach_confidence(swing_df, core_df)
+    swing_df, core_df = attach_confidence(swing_df, core_df, market_regime)
 
     # ── NEWS JUSTIFICATION (real fetch, explicit "none found" if empty) ──
     if skip_news:
@@ -2551,4 +2566,16 @@ def print_report(swing_df, core_df, crossover_df, bulk_deals_df, macro_events, m
 
 
 if __name__ == "__main__":
-    run_screener()
+    try:
+        run_screener()
+    except Exception as e:
+        print(f"FATAL: Screener crashed: {e}")
+        import traceback
+        traceback.print_exc()
+        # FIX: Always export empty CSVs so notifier can still send "no picks" email
+        try:
+            pd.DataFrame().to_csv("swing_book_3_6mo.csv", index=False)
+            pd.DataFrame().to_csv("core_book_1_2yr.csv", index=False)
+            print("✓ Empty CSVs exported for notifier")
+        except Exception:
+            pass

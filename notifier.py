@@ -79,8 +79,14 @@ def _fmt(val, fmt=".2f"):
 
 def build_message() -> tuple[str, str]:
     """Return (telegram_text, email_html) for today's picks."""
-    swing = pd.read_csv("swing_book_3_6mo.csv").head(5)
-    core = pd.read_csv("core_book_1_2yr.csv").head(5)
+    try:
+        swing = pd.read_csv("swing_book_3_6mo.csv").head(5)
+    except FileNotFoundError:
+        swing = pd.DataFrame()
+    try:
+        core = pd.read_csv("core_book_1_2yr.csv").head(5)
+    except FileNotFoundError:
+        core = pd.DataFrame()
     today = datetime.now().strftime("%d %b %Y")
 
     # ── Telegram (Markdown) ────────────────────────────────────────────

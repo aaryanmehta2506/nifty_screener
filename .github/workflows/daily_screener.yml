@@ -2,8 +2,8 @@ name: Daily Screener
 
 on:
   schedule:
-    # 9:00 AM IST = 3:30 AM UTC
-    - cron: '30 3 * * 1-5'  # Mon-Fri only
+    # 10:47 AM IST = 5:17 AM UTC
+    - cron: '17 5 * * 1-5'  # Mon-Fri only
   workflow_dispatch:  # allow manual trigger
 
 jobs:
@@ -31,7 +31,20 @@ jobs:
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}
         run: |
-          python unified_screener_v9_final.py
+          python unified_screener_v9_final.py || echo "Screener failed, but notifier will still run"
+        continue-on-error: true
+
+      - name: Send notifications
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}
+        run: |
           python notifier.py
 
       - name: Upload CSVs as artifacts

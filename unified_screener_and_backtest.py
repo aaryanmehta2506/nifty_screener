@@ -115,16 +115,16 @@ CONFIG = {
     "swing_min_price_above_52w_low_mult": 1.30,
     "swing_max_pct_below_52w_high": 0.25,
     "swing_atr_period": 14,
-    "swing_atr_sl_multiplier": 1.5,
+    "swing_atr_sl_multiplier": 1.2,
     "swing_vcp_lookback_days": 60,
     "swing_vcp_min_peaks": 2,
     "swing_vcp_peak_order": 5,
     "swing_target_rr_min": 2.0,
 
     # ── CORE BOOK (Quality+Growth+Technical+Momentum) ───────────────────
-    "core_score_strong_buy": 62,
-    "core_score_buy": 48,
-    "core_score_watch": 36,
+    "core_score_strong_buy": 65,
+    "core_score_buy": 50,
+    "core_score_watch": 40,
     "core_rsi_ideal_low": 44,
     "core_rsi_ideal_high": 62,
     "core_reject_earnings_growth_below": -25,
@@ -1305,9 +1305,9 @@ def calculate_fair_value_target(symbol: str, close: float, fund: "Fundamentals",
         target_pct_high = round(max(values), 1)
         target_pct_central = round(sum(values) / len(values), 1)
         # Hard outer sanity bounds regardless of method spread
-        target_pct_central = max(min(target_pct_central, 35.0), 8.0)
-        target_pct_low = max(min(target_pct_low, 35.0), 5.0)
-        target_pct_high = max(min(target_pct_high, 40.0), target_pct_central)
+        target_pct_central = max(min(target_pct_central, 60.0), 18.0)
+        target_pct_low = max(min(target_pct_low, 60.0), 8.0)
+        target_pct_high = max(min(target_pct_high, 60.0), target_pct_central)
         method = " | ".join(f"{k}: {v:+.1f}%" for k, v in estimates.items())
     else:
         # No usable PE/EPS/ROE data (e.g. loss-making Swiggy/Jio Financial)
@@ -1437,8 +1437,10 @@ def evaluate_core(symbol: str, df: pd.DataFrame, fund: Fundamentals,
             if fund.roe > 22:   q += 10; reasons.append(f"ROE {fund.roe}% — excellent")
             elif fund.roe > 15: q += 6;  reasons.append(f"ROE {fund.roe}% — good")
         if fund.debt_eq is not None:
-            if fund.debt_eq < 0.3: q += 8; reasons.append(f"D/E {fund.debt_eq} — fortress balance sheet")
+            if fund.debt_eq <= 0.3: q += 15; reasons.append(f"D/E {fund.debt_eq} — fortress balance sheet (+15)")
             elif fund.debt_eq < 0.8: q += 5; reasons.append(f"D/E {fund.debt_eq} — manageable")
+            elif fund.debt_eq > 1.0: q -= 25; reasons.append(f"D/E {fund.debt_eq} — high leverage (-25)")
+            elif fund.debt_eq > 2.0: q -= 40; reasons.append(f"D/E {fund.debt_eq} — DISTRESSED leverage (-40)")
         if fund.pe is not None and fund.earn_growth is not None and fund.earn_growth > 20 and fund.pe < 40:
             q += 7; reasons.append(f"PEG ~{round(fund.pe/fund.earn_growth,2)} — undervalued vs growth")
         elif fund.pe is not None and fund.pe < 18:
