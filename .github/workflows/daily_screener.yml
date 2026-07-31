@@ -2,8 +2,9 @@ name: Daily Screener
 
 on:
   schedule:
-    # 11:30 AM IST = 6:00 AM UTC
-    - cron: '0 6 * * 1-5'  # Mon-Fri only
+    # 11:37 AM IST (Asia/Kolkata)
+    - cron: '37 11 * * 1-5'
+      timezone: "Asia/Kolkata"
   workflow_dispatch:  # allow manual trigger
 
 jobs:
