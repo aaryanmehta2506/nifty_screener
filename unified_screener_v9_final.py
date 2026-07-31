@@ -1991,7 +1991,7 @@ def estimate_confidence_swing(row: dict) -> dict:
 FINANCIAL_SECTOR_LABELS = {"Banking", "Diversified Financials", "Housing Finance/NBFC",
                            "Insurance", "Capital Markets Infra"}
 
-def estimate_confidence_core(row: dict) -> dict:
+def estimate_confidence_core(row: dict, market_regime: Optional[dict] = None) -> dict:
     """LETHAL FIX: Rebuilt confidence scoring based on actual validation results.
     Previous version was BROKEN — High confidence (70-85%) had 38.5% win rate.
     New version is calibrated to actual performance data."""
@@ -2005,7 +2005,10 @@ def estimate_confidence_core(row: dict) -> dict:
     factors = [f"Base: model score {base_score}/100 — confidence capped at 70% (calibrated)"]
 
     # FIX: Regime-based adjustments per guide — BEAR has 80% win rate, BULL has 57%
-    market_regime = row.get("Market_Regime", "")
+    if market_regime is None:
+        market_regime = row.get("Market_Regime", "")
+    else:
+        market_regime = market_regime.get("Regime", "")
     if "BEAR" in market_regime:
         score = min(score + 15, 70)
         factors.append("BEAR regime active — high conviction (+15)")
