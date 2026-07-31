@@ -2,8 +2,8 @@ name: Daily Screener
 
 on:
   schedule:
-    # TEST: every 5 minutes to verify scheduling works
-    - cron: '*/5 * * * *'
+    # 11:48 AM IST = 6:18 AM UTC (Mon-Fri)
+    - cron: '18 6 * * 1-5'
   workflow_dispatch:  # allow manual trigger
 
 jobs:
