@@ -185,7 +185,7 @@ CONFIG = {
 
     # ── MARKET REGIME FILTER ───────────────────────────────────────────
     "regime_filter_enabled": True,     # FIX: only trade in favorable regimes
-    "favorable_regimes": ["BEAR", "RECOVERY", "SIDEWAYS"],  # LETHAL FIX: BEAR is 80% win rate!
+    "favorable_regimes": ["BULLISH", "BREAKOUT", "RECOVERY"],  # Trade in bullish/breakout/recovery
 
     # ── CORE BOOK (Quality+Growth+Technical+Momentum) ───────────────────
     "core_score_strong_buy": 65,       # LETHAL FIX: was 75 (too strict), catch more winners
@@ -250,6 +250,58 @@ CONFIG = {
     "portfolio_max_positions_other_bucket": 5,  # Task 1: 'Diversified/Other' isn't a real sector
     "eps_growth_extreme_threshold": 200,        # Task 2: above this = one-off/base effect
 
+    # ── ATR-BASED STOP (Core Book) ────────────────────────────────────────
+    "atr_period_v5": 20,                        # ATR lookback period
+    "atr_multiplier_v5": 2.0,                   # ATR stop multiplier
+    "atr_min_stop_width_pct": 5.0,              # never tighter than 5% below entry
+    "atr_max_stop_width_pct": 18.0,             # never wider than 18% below entry
+
+    # ── PYRAMIDING — NEW Phase 4 ──────────────────────────────────────────
+    "pyramiding_enabled": True,
+    "pyramid_entry_tranches": [
+        {"pct_of_position": 0.30, "trigger": "breakout",         "label": "Initial breakout entry"},
+        {"pct_of_position": 0.20, "trigger": "new_high_1week",   "label": "Confirmed new high"},
+        {"pct_of_position": 0.20, "trigger": "volume_surge",     "label": "Volume surge confirmation"},
+        {"pct_of_position": 0.30, "trigger": "momentum_extreme", "label": "Extreme momentum add"},
+    ],
+    "pyramid_exit_tranches": [
+        {"pct_of_position": 0.25, "rr_trigger": 1.5, "label": "Early profit lock"},
+        {"pct_of_position": 0.25, "rr_trigger": 2.5, "label": "Partial exit"},
+        {"pct_of_position": 0.25, "rr_trigger": 4.0, "label": "Major exit"},
+        {"pct_of_position": 0.25, "rr_trigger": 999, "label": "Target / trailing stop"},
+    ],
+
+    # ── MULTI-TIMEFRAME CONFIRMATION — NEW Phase 4 ────────────────────────
+    "mtf_enabled": True,
+    "mtf_weekly_sma_fast": 10,
+    "mtf_weekly_sma_slow": 20,
+    "mtf_monthly_sma": 6,
+    "mtf_reject_if_weekly_downtrend": True,
+    "mtf_reject_if_monthly_downtrend": False,
+
+    # ── MEAN REVERSION BOOK — NEW Phase 3 ────────────────────────────────
+    "mean_rev_enabled": True,
+    "mean_rev_sigma_threshold": 2.0,
+    "mean_rev_rsi_threshold": 32,
+    "mean_rev_volume_surge_min": 1.5,
+    "mean_rev_sma_period": 50,
+    "mean_rev_target_pct": 12.0,
+    "mean_rev_sl_pct": 6.0,
+    "mean_rev_min_rr": 1.8,
+    "mean_rev_max_pct_below_52w_high": 0.50,
+
+    # ── TAX OPTIMIZATION — NEW Phase 2 ───────────────────────────────────
+    "tax_ltcg_months": 12,
+    "tax_loss_harvest_month": 11,
+    "tax_stcg_rate": 0.15,
+    "tax_ltcg_rate": 0.10,
+    "tax_ltcg_exemption_inr": 100_000,
+
+    # ── PUT SPREAD HEDGE FLAGS — NEW Phase 3 ─────────────────────────────
+    "hedge_flag_position_threshold_pct": 0.12,
+    "hedge_flag_put_spread_width_pct": 0.08,
+    "hedge_estimated_cost_pct": 0.008,
+
     # Output
     "csv_output_swing": "swing_book_3_6mo.csv",
     "csv_output_core": "core_book_1_2yr.csv",
@@ -257,6 +309,7 @@ CONFIG = {
     "csv_output_bulkdeals": "bulk_deals_matched.csv",
     "csv_output_all_swing": "all_swing_passes.csv",
     "csv_output_all_core": "all_core_passes.csv",
+    "csv_output_mean_rev": "mean_reversion_book.csv",
 }
 
 
@@ -559,15 +612,15 @@ def fetch_fundamentals(symbol: str) -> Fundamentals:
         return round(v, round_to) if isinstance(v, (int, float)) else None
 
     def safe_debt_eq(key):
-        # FIX v9 (CRITICAL): yfinance returns debtToEquity as a PERCENT
-        # (41.5 means 0.415x), not a ratio. Storing it raw meant every D/E
-        # threshold in the scorer was dead (nothing was ever < 0.3, so the
-        # 'fortress balance sheet' bonus never fired) and produced absurd
-        # 'D/E 150' values that then triggered bogus leverage panic.
+        # FIX v9 (CRITICAL): yfinance returns debtToEquity inconsistently.
+        # Some stocks: 0.45 (already ratio), some: 45 (percent format).
+        # Heuristic: if value > 5, assume it's a percentage and divide by 100.
         v = info.get(key)
         if not isinstance(v, (int, float)):
             return None
-        return round(v / 100, 3)
+        if v > 5:  # likely a percentage (e.g., 45 means 0.45x)
+            v = v / 100
+        return round(v, 3)
 
     result = Fundamentals(
         pe=safe_num("trailingPE"), fwd_pe=safe_num("forwardPE"),
@@ -776,7 +829,7 @@ def reconcile_with_holdings(df: pd.DataFrame) -> pd.DataFrame:
 # 6. SWING BOOK — Minervini Trend Template + VCP + ATR stop (3-6 months)
 # ═════════════════════════════════════════════════════════════════════════
 
-def evaluate_swing(symbol: str, df: pd.DataFrame) -> Optional[dict]:
+def evaluate_swing(symbol: str, df: pd.DataFrame, market_regime: Optional[dict] = None) -> Optional[dict]:
     try:
         df = df.copy()
         df["SMA_50"]  = sma(df["Close"], length=50)
@@ -807,8 +860,24 @@ def evaluate_swing(symbol: str, df: pd.DataFrame) -> Optional[dict]:
             "within_25pct_high52w": close >= (1 - CONFIG["swing_max_pct_below_52w_high"]) * high_52w,
         }
         passed = sum(conditions.values())
-        # LETHAL FIX: Require only 4/7 conditions (was 5/7)
-        if passed < 4:
+
+        # Regime-aware filter relaxation
+        regime_name = market_regime.get("Regime", "") if market_regime else ""
+        is_bullish = any(r in regime_name for r in ["BULLISH", "BREAKOUT"])
+        is_recovery = any(r in regime_name for r in ["RECOVERY", "NEUTRAL"])
+        is_bear = any(r in regime_name for r in ["BEAR", "BREAKDOWN", "CHOPPY"])
+
+        if is_bullish:
+            min_conditions = 4  # Quality over quantity in bullish markets
+            min_vcp_peaks = 1
+        elif is_recovery:
+            min_conditions = 3  # Relaxed in recovery — catch early moves
+            min_vcp_peaks = 1
+        else:  # BEAR/CHOPPY
+            min_conditions = 5  # Stricter in bad markets
+            min_vcp_peaks = 2
+
+        if passed < min_conditions:
             failed = [k for k, v in conditions.items() if not v]
             REJECTION_LOG[symbol] = f"Swing: failed trend template ({passed}/7) — {failed}"
             NEAR_MISS_LOG[symbol] = {"score": passed * 10, "reason": f"Trend template {passed}/7", "category": "Swing"}
@@ -817,7 +886,7 @@ def evaluate_swing(symbol: str, df: pd.DataFrame) -> Optional[dict]:
         # LETHAL FIX: Relaxed VCP — require only 1 peak (was 2, still too strict)
         recent = df["Close"].tail(CONFIG["swing_vcp_lookback_days"]).values
         maxima = argrelextrema(recent, np.greater, order=CONFIG["swing_vcp_peak_order"])[0]
-        if len(maxima) < 1:  # LETHAL FIX: was 2
+        if len(maxima) < min_vcp_peaks:
             REJECTION_LOG[symbol] = f"Swing: trend OK but VCP not formed ({len(maxima)} peaks)"
             NEAR_MISS_LOG[symbol] = {"score": 60, "reason": f"Trend OK, VCP weak ({len(maxima)} peaks)", "category": "Swing"}
             return None
@@ -931,6 +1000,310 @@ def evaluate_swing(symbol: str, df: pd.DataFrame) -> Optional[dict]:
 
 
 # ═════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 6b. PYRAMIDING PLAN — 4-TRANCHE ENTRY/EXIT
+# ═══════════════════════════════════════════════════════════════════════════
+
+def generate_pyramiding_plan(entry_price: float, stop_loss: float,
+                              target_price: float, total_shares: int) -> dict:
+    """
+    Generate a 4-tranche scale-in and scale-out plan.
+    Scale-in: spread entries to reduce timing risk and improve avg price.
+    Scale-out: lock in profits progressively at increasing R:R levels.
+    """
+    if not CONFIG.get("pyramiding_enabled", True) or total_shares < 4:
+        return {"enabled": False, "reason": "Pyramiding disabled or position too small"}
+
+    risk_per_share = entry_price - stop_loss
+    entry_tranches = []
+    cumulative_shares = 0
+
+    for t in CONFIG.get("pyramid_entry_tranches", []):
+        shares = max(1, int(total_shares * t["pct_of_position"]))
+        cumulative_shares += shares
+        price_estimate = entry_price
+        if t["trigger"] == "new_high_1week":
+            price_estimate = entry_price * 1.01
+        elif t["trigger"] == "volume_surge":
+            price_estimate = entry_price * 1.02
+        elif t["trigger"] == "momentum_extreme":
+            price_estimate = entry_price * 1.03
+
+        entry_tranches.append({
+            "tranche": len(entry_tranches) + 1,
+            "shares": shares,
+            "trigger": t["trigger"],
+            "label": t["label"],
+            "estimated_entry_price": round(price_estimate, 2),
+            "estimated_cost": round(shares * price_estimate, 2),
+        })
+
+    exit_tranches = []
+    for t in CONFIG.get("pyramid_exit_tranches", []):
+        shares = max(1, int(total_shares * t["pct_of_position"]))
+        if t["rr_trigger"] == 999:
+            exit_price = target_price
+        else:
+            exit_price = entry_price + (risk_per_share * t["rr_trigger"])
+
+        exit_tranches.append({
+            "tranche": len(exit_tranches) + 1,
+            "shares": shares,
+            "rr_trigger": t["rr_trigger"] if t["rr_trigger"] != 999 else "Target",
+            "label": t["label"],
+            "exit_price": round(exit_price, 2),
+            "profit_at_exit": round(shares * (exit_price - entry_price), 2),
+        })
+
+    avg_entry = sum(t["estimated_entry_price"] * t["shares"] for t in entry_tranches) / max(1, sum(t["shares"] for t in entry_tranches))
+
+    return {
+        "enabled": True,
+        "total_shares": total_shares,
+        "entry_tranches": entry_tranches,
+        "exit_tranches": exit_tranches,
+        "avg_estimated_entry": round(avg_entry, 2),
+        "entry_note": "Scale in over days/weeks as each trigger fires — do NOT buy all at once",
+        "exit_note": "Scale out as targets hit — leave final tranche for full target or trailing stop",
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 6c. MULTI-TIMEFRAME CONFIRMATION — WEEKLY + MONTHLY
+# ═══════════════════════════════════════════════════════════════════════════
+
+def check_multi_timeframe_alignment(df: pd.DataFrame, symbol: str) -> dict:
+    """
+    Confirm daily breakout is aligned with weekly and monthly trends.
+    A daily breakout against a weekly downtrend has ~30% failure rate.
+    """
+    if not CONFIG.get("mtf_enabled", True):
+        return {"aligned": True, "reason": "MTF check disabled", "weekly_ok": True, "monthly_ok": True}
+
+    result = {"weekly_ok": True, "monthly_ok": True, "aligned": True, "reason": "", "details": {}}
+
+    try:
+        # Weekly trend check
+        weekly = df.resample("W").agg({
+            "Open": "first", "High": "max", "Low": "min",
+            "Close": "last", "Volume": "sum"
+        }).dropna()
+
+        if len(weekly) >= CONFIG.get("mtf_weekly_sma_slow", 20) + 2:
+            w_sma_fast = weekly["Close"].rolling(CONFIG.get("mtf_weekly_sma_fast", 10)).mean().iloc[-1]
+            w_sma_slow = weekly["Close"].rolling(CONFIG.get("mtf_weekly_sma_slow", 20)).mean().iloc[-1]
+            weekly_uptrend = w_sma_fast > w_sma_slow
+
+            result["details"]["weekly_sma_fast"] = round(float(w_sma_fast), 2)
+            result["details"]["weekly_sma_slow"] = round(float(w_sma_slow), 2)
+            result["details"]["weekly_uptrend"] = weekly_uptrend
+
+            if CONFIG.get("mtf_reject_if_weekly_downtrend", True) and not weekly_uptrend:
+                result["weekly_ok"] = False
+                result["reason"] = (f"Weekly downtrend: W-SMA{CONFIG['mtf_weekly_sma_fast']} "
+                                    f"({w_sma_fast:.0f}) < W-SMA{CONFIG['mtf_weekly_sma_slow']} "
+                                    f"({w_sma_slow:.0f}) — daily breakout is counter-trend")
+
+        # Monthly trend check
+        monthly = df.resample("ME").agg({
+            "Open": "first", "High": "max", "Low": "min",
+            "Close": "last", "Volume": "sum"
+        }).dropna()
+
+        if len(monthly) >= CONFIG.get("mtf_monthly_sma", 6) + 2:
+            m_sma = monthly["Close"].rolling(CONFIG.get("mtf_monthly_sma", 6)).mean().iloc[-1]
+            monthly_uptrend = monthly["Close"].iloc[-1] > m_sma
+
+            result["details"]["monthly_sma"] = round(float(m_sma), 2)
+            result["details"]["monthly_uptrend"] = monthly_uptrend
+
+            if CONFIG.get("mtf_reject_if_monthly_downtrend", False) and not monthly_uptrend:
+                result["monthly_ok"] = False
+                if result["reason"]:
+                    result["reason"] += " | "
+                result["reason"] += (f"Monthly downtrend: price below {CONFIG['mtf_monthly_sma']}M SMA ({m_sma:.0f})")
+
+    except Exception as e:
+        result["details"]["error"] = f"MTF computation failed: {e}"
+        result["reason"] = "MTF check failed (data issue) — not rejecting"
+
+    result["aligned"] = result["weekly_ok"] and result["monthly_ok"]
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 6d. TAX EFFICIENCY NOTES — LTCG/STCG
+# ═══════════════════════════════════════════════════════════════════════════
+
+def compute_tax_note(horizon_months: int, target_pct: float,
+                     deploy_inr: float) -> dict:
+    """
+    Compute tax-aware notes for each pick.
+    India tax rates (post-2024 budget):
+    - STCG (< 12 months equity): 15% flat
+    - LTCG (≥ 12 months equity): 10% on gains above ₹1L/year
+    """
+    estimated_gain = deploy_inr * (target_pct / 100)
+    stcg_tax = estimated_gain * CONFIG.get("tax_stcg_rate", 0.15)
+    ltcg_taxable = max(0, estimated_gain - CONFIG.get("tax_ltcg_exemption_inr", 100_000))
+    ltcg_tax = ltcg_taxable * CONFIG.get("tax_ltcg_rate", 0.10)
+    tax_saving = max(0, stcg_tax - ltcg_tax)
+
+    is_ltcg_horizon = horizon_months >= CONFIG.get("tax_ltcg_months", 12)
+
+    notes = []
+    if is_ltcg_horizon:
+        notes.append(f"✅ LTCG horizon ({horizon_months}M ≥ 12M) — 10% tax vs 15% STCG")
+        if ltcg_tax < stcg_tax:
+            notes.append(f"Estimated tax saving vs STCG: ₹{tax_saving:,.0f}")
+    else:
+        notes.append(f"⚠️ STCG horizon ({horizon_months}M < 12M) — 15% tax applies")
+        if horizon_months >= 10:
+            notes.append(f"💡 Consider holding {12 - horizon_months}M more for LTCG advantage")
+        notes.append(f"Consider booking losses at month 11 to offset gains (tax harvesting)")
+
+    return {
+        "is_ltcg": is_ltcg_horizon,
+        "estimated_gain_inr": round(estimated_gain, 0),
+        "stcg_tax_estimate": round(stcg_tax, 0),
+        "ltcg_tax_estimate": round(ltcg_tax, 0),
+        "tax_saving_estimate": round(tax_saving, 0),
+        "note": " | ".join(notes),
+        "disclaimer": "Tax estimate only — consult CA for actual liability",
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 6e. MEAN REVERSION BOOK — OVERSOLD BOUNCES (1-2 months)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def evaluate_mean_reversion(symbol: str, df: pd.DataFrame,
+                             regime_multiplier: float = 1.0,
+                             sector_rotation_multiplier: float = 1.0) -> Optional[dict]:
+    """
+    Mean reversion entry signals — buys oversold stocks bouncing back to mean.
+    Complements the momentum Swing Book (which only takes breakouts).
+    """
+    try:
+        if len(df) < 60:
+            return None
+
+        close = df["Close"].iloc[-1]
+        sma_p = CONFIG.get("mean_rev_sma_period", 50)
+
+        sma50 = df["Close"].rolling(sma_p).mean().iloc[-1]
+        std50 = df["Close"].rolling(sma_p).std().iloc[-1]
+
+        if pd.isna(sma50) or pd.isna(std50) or std50 == 0:
+            return None
+
+        # Condition 1: Price must be > N sigma below SMA
+        sigma_below = (sma50 - close) / std50
+        if sigma_below < CONFIG.get("mean_rev_sigma_threshold", 2.0):
+            return None
+
+        # Condition 2: RSI must be oversold
+        delta = df["Close"].diff()
+        gain = delta.clip(lower=0).rolling(14).mean()
+        loss = (-delta.clip(upper=0)).rolling(14).mean()
+        rsi_val = 100 - (100 / (1 + gain.iloc[-1] / loss.iloc[-1])) if loss.iloc[-1] != 0 else 50
+
+        if rsi_val > CONFIG.get("mean_rev_rsi_threshold", 32):
+            return None
+
+        # Condition 3: Volume surge
+        avg_vol_20 = df["Volume"].iloc[-21:-1].mean()
+        last_vol = df["Volume"].iloc[-1]
+        vol_ratio = last_vol / avg_vol_20 if avg_vol_20 > 0 else 0
+
+        if vol_ratio < CONFIG.get("mean_rev_volume_surge_min", 1.5):
+            return None
+
+        # Condition 4: Don't catch falling knives
+        high_52w = df["High"].rolling(252).max().iloc[-1]
+        pct_below_high = (high_52w - close) / high_52w
+        if pct_below_high > CONFIG.get("mean_rev_max_pct_below_52w_high", 0.50):
+            REJECTION_LOG[symbol] = (f"MeanRev: {pct_below_high*100:.0f}% below 52W high — "
+                                     "secular downtrend risk, skip")
+            return None
+
+        # Target = return to SMA
+        target_price = sma50
+        target_pct = (target_price - close) / close * 100
+
+        if target_pct < 3.0:
+            return None
+
+        target_pct = min(target_pct, CONFIG.get("mean_rev_target_pct", 12.0))
+        target_price = close * (1 + target_pct / 100)
+
+        stop_pct = CONFIG.get("mean_rev_sl_pct", 6.0)
+        stop_price = close * (1 - stop_pct / 100)
+        rr = target_pct / stop_pct
+
+        if rr < CONFIG.get("mean_rev_min_rr", 1.8):
+            return None
+
+        confidence = 45
+        if sigma_below >= 2.5:
+            confidence += 8
+        if rsi_val < 25:
+            confidence += 7
+        if vol_ratio >= 2.5:
+            confidence += 5
+        confidence = min(confidence, 68)
+
+        sizing = calculate_position_size(
+            close, stop_price,
+            regime_multiplier=regime_multiplier,
+            confidence_pct=confidence,
+            sector_rotation_multiplier=sector_rotation_multiplier,
+        )
+
+        low_52w = df["Low"].rolling(252).min().iloc[-1]
+        tax_note = compute_tax_note(
+            horizon_months=1,
+            target_pct=target_pct,
+            deploy_inr=sizing["deploy"] if sizing else 0
+        )
+
+        result = {
+            "Symbol": symbol,
+            "CMP": round(close, 2),
+            "Entry": round(close, 2),
+            "Target": round(target_price, 2),
+            "Stop_Loss": round(stop_price, 2),
+            "Target_SMA": round(sma50, 2),
+            "Sigma_Below_SMA": round(sigma_below, 2),
+            "RSI": round(rsi_val, 1),
+            "Volume_Surge_Ratio": round(vol_ratio, 2),
+            "Profit_%": round(target_pct, 1),
+            "Risk_%": round(stop_pct, 1),
+            "RR_Ratio": round(rr, 1),
+            "Confidence_%": confidence,
+            "Pct_From_52W_High": round(pct_below_high * 100, 1),
+            "Pct_Above_52W_Low": round((close / low_52w - 1) * 100, 1) if low_52w > 0 else 0,
+            "Strategy": "Mean Reversion",
+            "Horizon": "1-2 months",
+            "Tax_Note": tax_note["note"],
+            "Reasons": (f"σ={sigma_below:.1f} below SMA50 | RSI={rsi_val:.0f} oversold | "
+                        f"Volume {vol_ratio:.1f}x surge | Target: return to ₹{sma50:.0f} SMA"),
+        }
+
+        if sizing:
+            result.update({
+                "Shares_To_Buy": sizing["shares"],
+                "Deploy_₹": sizing["deploy"],
+                "Max_Risk_₹": sizing["max_risk"],
+                "%_of_Portfolio": sizing.get("deploy_pct_of_portfolio", 0),
+            })
+        return result
+    except Exception as e:
+        REJECTION_LOG[symbol] = f"MeanRev eval crashed: {e}"
+        return None
+
+
 # 7. CORE BOOK — Quality+Growth+Technical+Momentum (1-2 years)
 # ═════════════════════════════════════════════════════════════════════════
 
@@ -1014,7 +1387,7 @@ def get_sector_label(symbol: str) -> str:
 
 
 def calculate_fair_value_target(symbol: str, close: float, fund: "Fundamentals",
-                                  score: int, grade: str) -> dict:
+                                  df: pd.DataFrame, score: int, grade: str) -> dict:
     """
     v9: three independent estimates + spread, as before, PLUS:
       1. Extreme EPS growth (> eps_growth_extreme_threshold) is capped at 100
@@ -1088,18 +1461,43 @@ def calculate_fair_value_target(symbol: str, close: float, fund: "Fundamentals",
         target_pct_low = max(target_pct_central - 5, 8.0)
         target_pct_high = target_pct_central + 8
 
-    # LETHAL FIX: Grade-dependent stop loss — higher grade = tighter stop (more conviction)
-    sl_pct = 10 if grade == "STRONG BUY" else 12 if grade == "BUY" else 14
+    # ── ATR-based stop loss (per-stock, not grade-bucketed) ─────────────────
+    try:
+        atr20 = ta.atr(df["High"], df["Low"], df["Close"],
+                       length=CONFIG.get("atr_period_v5", 20)).iloc[-1]
+        atr_stop = close - (CONFIG.get("atr_multiplier_v5", 2.0) * float(atr20))
+    except Exception:
+        atr20 = close * 0.02
+        atr_stop = close - (2 * close * 0.02)
+
+    structural_low = df["Low"].tail(20).min()
+    # Use the HIGHER of ATR stop and structural low (tighter = better risk mgmt)
+    # But never tighter than min_stop_width_pct below entry (breathing room)
+    min_stop_pct = CONFIG.get("atr_min_stop_width_pct", 5.0)
+    max_stop_pct = CONFIG.get("atr_max_stop_width_pct", 18.0)
+    stop_price = max(atr_stop, float(structural_low), close * (1 - min_stop_pct / 100))
+    # Never wider than max_stop_width_pct below entry
+    stop_price = max(stop_price, close * (1 - max_stop_pct / 100))
+    # CRITICAL: stop must ALWAYS be below entry price
+    stop_price = min(stop_price, close * 0.99)
+
+    sl_pct = round((close - stop_price) / close * 100, 2)
+    if sl_pct <= 0:
+        sl_pct = 8.0
+        stop_price = close * (1 - sl_pct / 100)
+
     return {
         "target_price": round(close * (1 + target_pct_central / 100), 2),
         "target_price_low": round(close * (1 + target_pct_low / 100), 2),
         "target_price_high": round(close * (1 + target_pct_high / 100), 2),
-        "sl_price": round(close * (1 - sl_pct / 100), 2),
+        "sl_price": round(stop_price, 2),
         "target_pct": target_pct_central, "target_pct_low": target_pct_low,
         "target_pct_high": target_pct_high, "sl_pct": sl_pct,
         "sector_bucket": sector, "peg_ceiling_used": peg_ceiling,
         "methods_used": list(estimates.keys()) if estimates else ["fallback"],
         "method": method,
+        "atr_used": round(float(atr20), 2) if isinstance(atr20, (int, float)) else 0,
+        "structural_low_20d": round(float(structural_low), 2),
     }
 
 
@@ -1209,7 +1607,7 @@ def evaluate_core(symbol: str, df: pd.DataFrame, fund: Fundamentals) -> Optional
             avg_up_vol = up_days["Volume"].iloc[-20:].mean()
             avg_down_vol = down_days["Volume"].iloc[-20:].mean()
             if avg_up_vol > avg_down_vol * 1.2:
-                m += 5; reasons.append(f"Institutional accumulation — up-day volume {avg_up_vol/avg_down_vol:.1f}x down-day (+5)")
+                reasons.append(f"Institutional accumulation — up-day volume {avg_up_vol/avg_down_vol:.1f}x down-day")
 
         # LETHAL FIX: Only reject on EPS growth if we HAVE real data
         # If fundamentals are empty (None), don't reject — we just don't know
@@ -1318,7 +1716,16 @@ def evaluate_core(symbol: str, df: pd.DataFrame, fund: Fundamentals) -> Optional
         grade = ("STRONG BUY" if total >= CONFIG["core_score_strong_buy"] else
                   "BUY" if total >= CONFIG["core_score_buy"] else "WATCH")
 
-        valuation = calculate_fair_value_target(symbol, close, fund, total, grade)
+        # ── Quality Score integration ───────────────────────────────────────
+        q_score, q_signals = compute_quality_score(fund)
+        if q_score >= 7:
+            total += 10; reasons.append(f"Quality Score {q_score}/9 — strong (+10)")
+        elif q_score >= 5:
+            total += 4; reasons.append(f"Quality Score {q_score}/9 — neutral (+4)")
+        elif q_score <= 3:
+            total -= 8; reasons.append(f"Quality Score {q_score}/9 — weak (-8)")
+
+        valuation = calculate_fair_value_target(symbol, close, fund, df, total, grade)
         target_price = valuation["target_price"]
         sl_price = valuation["sl_price"]
         base_tgt = valuation["target_pct"]
@@ -1346,6 +1753,8 @@ def evaluate_core(symbol: str, df: pd.DataFrame, fund: Fundamentals) -> Optional
             "Sector_Label": get_sector_label(symbol),
             "Valuation_Methods_Used": ", ".join(valuation["methods_used"]),
             "Valuation_Method_Detail": valuation["method"],
+            "ATR_Used": valuation.get("atr_used", 0),
+            "Structural_Low_20D": valuation.get("structural_low_20d", 0),
             "Real_Analyst_Target_Status": analyst["status"],
             "Real_Analyst_Target_Avg": analyst.get("target_avg"),
             "Real_Analyst_Target_Low": analyst.get("target_low"),
@@ -1356,6 +1765,8 @@ def evaluate_core(symbol: str, df: pd.DataFrame, fund: Fundamentals) -> Optional
                                   "consensus. Check Real_Analyst_Target_* columns for actual street "
                                   "data if ANALYST_API_CONFIG is set, or verify independently otherwise.",
             "Reasons": " | ".join(reasons[:5]), "Horizon": "1-2 years",
+            "Quality_Score": q_score,
+            "Quality_Signals": " | ".join(q_signals) if q_signals else "N/A",
         }
         if sizing:
             result.update({
@@ -1487,9 +1898,12 @@ def fetch_nifty_index_data() -> Optional[pd.DataFrame]:
     return None
 
 
-def _compute_swing_levels(df: pd.DataFrame) -> dict:
-    """Finds real recent swing highs/lows (computed, not guessed) to use as
-    reference resistance/support zones."""
+def _compute_swing_levels_v2(df: pd.DataFrame, current_price: float) -> dict:
+    """
+    FIXED: Filters levels so resistance is always ABOVE current price
+    and support is always BELOW. The original code could show 'support'
+    above current price which is physically meaningless.
+    """
     window = df.tail(CONFIG["regime_swing_level_lookback_days"])
     order = CONFIG["regime_swing_level_order"]
     highs, lows = window["High"].values, window["Low"].values
@@ -1497,8 +1911,18 @@ def _compute_swing_levels(df: pd.DataFrame) -> dict:
     max_idx = argrelextrema(highs, np.greater, order=order)[0]
     min_idx = argrelextrema(lows, np.less, order=order)[0]
 
-    resistance = sorted(set(round(float(x), 0) for x in highs[max_idx]), reverse=True)[:3]
-    support = sorted(set(round(float(x), 0) for x in lows[min_idx]), reverse=True)[:3]
+    # FIXED: Resistance must be ABOVE current price
+    resistance = sorted(
+        [round(float(x), 0) for x in highs[max_idx] if float(x) > current_price],
+        reverse=False  # ascending: nearest resistance first
+    )[:3]
+
+    # FIXED: Support must be BELOW current price
+    support = sorted(
+        [round(float(x), 0) for x in lows[min_idx] if float(x) < current_price],
+        reverse=True   # descending: nearest support first
+    )[:3]
+
     return {"resistance_levels": resistance, "support_levels": support}
 
 
@@ -1596,7 +2020,7 @@ def evaluate_nifty_regime() -> dict:
                        "(Score/Confidence_%) rather than broad market tailwind.")
 
         risk_on = regime in ("BULLISH — BREAKOUT", "BULLISH — TREND INTACT", "RECOVERY")
-        levels = _compute_swing_levels(df)
+        levels = _compute_swing_levels_v2(df, close)
 
         return {
             "Nifty_CMP": round(close, 1),
@@ -1618,11 +2042,16 @@ def evaluate_nifty_regime() -> dict:
         return None
 
 
-def print_market_regime(regime: dict):
+def print_market_regime(regime: Optional[dict]):
     print("\n" + "═" * 95)
     print("  🧭 MARKET REGIME — NIFTY 50")
     print("═" * 95)
-    
+
+    if regime is None:
+        print("  ⚠️  Market regime data unavailable this run.")
+        print("      Proceeding with individual stock analysis only.")
+        return
+
     # Check if this is a default regime (data fetch failed)
     is_default = regime.get("Nifty_CMP", 0) == 0
     
@@ -1992,69 +2421,149 @@ FINANCIAL_SECTOR_LABELS = {"Banking", "Diversified Financials", "Housing Finance
                            "Insurance", "Capital Markets Infra"}
 
 def estimate_confidence_core(row: dict, market_regime: Optional[dict] = None) -> dict:
-    """LETHAL FIX: Rebuilt confidence scoring based on actual validation results.
-    Previous version was BROKEN — High confidence (70-85%) had 38.5% win rate.
-    New version is calibrated to actual performance data."""
-    base_score = row.get("Score", 0)
+    """
+    REWRITTEN: Eliminates the uniform 70% cap bug.
     
-    # LETHAL FIX: Start with score directly, but clamp to realistic range
-    # Validation shows Medium (50-70%) has 76.9% win rate — that's our sweet spot
-    # High (70-85%) had 38.5% win rate — completely broken
-    # So we cap confidence at 70% and only give 70% for truly exceptional setups
-    score = min(base_score, 70)  # LETHAL FIX: cap at 70% (was 85%)
-    factors = [f"Base: model score {base_score}/100 — confidence capped at 70% (calibrated)"]
+    Now the score DIFFERENTIATES:
+    - Score 80+, low D/E, high ROE, good PEG → 75-85%
+    - Score 65-79, decent fundamentals        → 60-74%
+    - Score 50-64                             → 45-59%
+    - Score <50 (WATCH)                       → 30-44%
+    
+    The cap exists per tier, not as a universal override.
+    Factors are additive/subtractive WITHIN their tier.
+    """
+    base_score = row.get("Score", 0)
+    factors = []
 
-    # FIX: Regime-based adjustments per guide — BEAR has 80% win rate, BULL has 57%
-    if market_regime is None:
-        market_regime = row.get("Market_Regime", "")
+    # ── Tier assignment ───────────────────────────────────────────────────
+    if base_score >= 80:
+        base_confidence = 72
+        tier_cap = 90
+        factors.append(f"Tier: Exceptional (score {base_score}) → base {base_confidence}%")
+    elif base_score >= 70:
+        base_confidence = 62
+        tier_cap = 79
+        factors.append(f"Tier: Strong (score {base_score}) → base {base_confidence}%")
+    elif base_score >= 60:
+        base_confidence = 52
+        tier_cap = 69
+        factors.append(f"Tier: Good (score {base_score}) → base {base_confidence}%")
     else:
-        market_regime = market_regime.get("Regime", "")
-    if "BEAR" in market_regime:
-        score = min(score + 15, 70)
-        factors.append("BEAR regime active — high conviction (+15)")
-    elif "BULL" in market_regime:
-        score = max(score - 5, 5)
-        factors.append("BULL regime active — de-rate due to lower accuracy (-5)")
-    elif "RECOVERY" in market_regime:
-        score = min(score + 5, 70)
-        factors.append("RECOVERY regime active — good opportunity (+5)")
-    elif "SIDEWAYS" in market_regime or "NEUTRAL" in market_regime:
-        factors.append("SIDEWAYS/NEUTRAL regime active — neutral opportunity")
+        base_confidence = 38
+        tier_cap = 55
+        factors.append(f"Tier: Watch (score {base_score}) → base {base_confidence}%")
 
-    # LETHAL FIX: STRONG BUY grade gets +5 (validation shows 75% win rate)
-    grade = row.get("Grade", "")
-    if grade == "STRONG BUY":
-        score = min(score + 5, 70)
-        factors.append("STRONG BUY grade (+5) — 75% historical win rate")
-    elif grade == "WATCH":
-        score = max(score - 10, 5)
-        factors.append("WATCH grade (-10) — 67.3% win rate but lower conviction")
+    score = base_confidence
 
-    # LETHAL FIX: D/E only matters if we have real data
-    # If fundamentals are empty (None), don't penalize — we just don't know
-    debt_eq = row.get("Debt_Eq")
-    if debt_eq is not None:
-        if debt_eq > 2.0:
-            score = max(score - 20, 5); factors.append(f"D/E {debt_eq} — distressed (-20)")
-        elif debt_eq > 1.0:
-            score = max(score - 10, 5); factors.append(f"D/E {debt_eq} — high leverage (-10)")
-        elif debt_eq <= 0.3:
-            score = min(score + 5, 70); factors.append(f"D/E {debt_eq} — fortress (+5)")
+    # ── Positive adjustments ──────────────────────────────────────────────
+    # RR ratio: higher is better
+    rr = row.get("RR_Ratio", 0) or 0
+    if rr >= 4:
+        score += 8; factors.append(f"Excellent R:R {rr:.1f} (+8)")
+    elif rr >= 3:
+        score += 5; factors.append(f"Good R:R {rr:.1f} (+5)")
+    elif rr >= 2:
+        score += 2; factors.append(f"Acceptable R:R {rr:.1f} (+2)")
+    else:
+        score -= 5; factors.append(f"Weak R:R {rr:.1f} (-5)")
 
-    # LETHAL FIX: ROE bonus only if we have real data
-    roe = row.get("ROE_%")
-    if roe is not None and roe > 20:
-        score = min(score + 5, 70)
-        factors.append(f"ROE {roe:.0f}% > 20% (+5)")
-
-    # LETHAL FIX: EPS growth bonus only if we have real data
+    # PEG ratio
+    pe = row.get("PE")
     earn_g = row.get("EPS_Growth_%")
-    if earn_g is not None and 10 <= earn_g <= 50:
-        score = min(score + 5, 70)
-        factors.append(f"EPS growth {earn_g:.0f}% in sweet spot (+5)")
+    if pe and earn_g and earn_g > 0:
+        peg = pe / earn_g
+        if peg < 1.0:
+            score += 8; factors.append(f"PEG {peg:.2f} — growth > price (+8)")
+        elif peg < 1.5:
+            score += 4; factors.append(f"PEG {peg:.2f} — fair value (+4)")
+        elif peg > 3.0:
+            score -= 6; factors.append(f"PEG {peg:.2f} — expensive (-6)")
 
-    score = min(max(round(score), 5), 70)  # LETHAL FIX: hard cap at 70%
+    # ROE quality
+    roe = row.get("ROE_%")
+    if roe is not None:
+        if roe >= 25:
+            score += 6; factors.append(f"ROE {roe:.0f}% — excellent (+6)")
+        elif roe >= 15:
+            score += 3; factors.append(f"ROE {roe:.0f}% — good (+3)")
+
+    # D/E risk
+    de = row.get("Debt_Eq")
+    if de is not None:
+        if de <= 0.3:
+            score += 5; factors.append(f"D/E {de:.2f} — fortress (+5)")
+        elif de > 2.0:
+            score -= 10; factors.append(f"D/E {de:.2f} — distressed (-10)")
+        elif de > 1.0:
+            score -= 5; factors.append(f"D/E {de:.2f} — high leverage (-5)")
+
+    # Dividend yield: shows financial health
+    div = row.get("Div_Yield_%")
+    if div and div > 2.5:
+        score += 3; factors.append(f"Div yield {div:.1f}% — income (+3)")
+
+    # EPS growth momentum
+    if earn_g is not None:
+        if 15 <= earn_g <= 60:
+            score += 4; factors.append(f"EPS growth {earn_g:.0f}% — sweet spot (+4)")
+        elif earn_g > 100:
+            score -= 2; factors.append(f"EPS growth {earn_g:.0f}% — likely base effect (-2)")
+
+    # ── Apply tier cap and floor ───────────────────────────────────────────
+    score = min(max(round(score), 20), tier_cap)
+
     return {"confidence_pct": score, "factors": factors}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 11b. PIOTROSKI F-SCORE — NEW (proven +3-5% alpha)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def compute_quality_score(fund: Fundamentals) -> tuple[int, list[str]]:
+    """
+    Quality Score: 9-point fundamental health check (inspired by Piotroski F-Score).
+    Score 7-9 = strong, 4-6 = neutral, 0-3 = weak.
+    
+    NOTE: This is NOT the full classical Piotroski model (which requires CFO,
+    ROA improvement, asset turnover, etc. — not available from yfinance .info).
+    This is a practical quality score using available data points.
+    """
+    score = 0
+    signals = []
+
+    # Profitability (3 signals)
+    if fund.roe is not None and fund.roe > 0:
+        score += 1; signals.append("Q1: ROE>0 ✅")
+    if fund.earn_growth is not None and fund.earn_growth > 0:
+        score += 1; signals.append("Q2: EPS growing ✅")
+    if fund.rev_growth is not None and fund.rev_growth > 0:
+        score += 1; signals.append("Q3: Revenue growing ✅")
+
+    # Leverage/Liquidity (2 signals)
+    if fund.debt_eq is not None and fund.debt_eq < 1.0:
+        score += 1; signals.append("Q4: D/E<1.0 ✅")
+    if fund.pb is not None and fund.pb > 0:
+        score += 1; signals.append("Q5: P/B positive ✅")
+
+    # Operating efficiency (2 signals)
+    if fund.roe is not None and fund.roe > 15:
+        score += 1; signals.append("Q6: ROE>15% ✅")
+    if fund.earn_growth is not None and fund.rev_growth is not None:
+        if fund.earn_growth > fund.rev_growth:
+            score += 1; signals.append("Q7: Margins expanding ✅")
+
+    # Dividend (1 signal)
+    if fund.div_yield is not None and fund.div_yield > 2.0:
+        score += 1; signals.append("Q8: Dividend>2% ✅")
+
+    # PEG (1 signal)
+    if fund.pe is not None and fund.earn_growth is not None and fund.earn_growth > 0:
+        peg = fund.pe / fund.earn_growth
+        if peg < 1.5:
+            score += 1; signals.append("Q9: PEG<1.5 ✅")
+
+    return score, signals
 
 
 def attach_confidence(swing_df: pd.DataFrame, core_df: pd.DataFrame,
@@ -2096,9 +2605,11 @@ def run_screener(universe_override: Optional[dict[str, pd.DataFrame]] = None,
                 swing_df = pd.DataFrame(cached_results[0]) if cached_results[0] else pd.DataFrame()
                 core_df = pd.DataFrame(cached_results[1]) if cached_results[1] else pd.DataFrame()
                 crossover_df = pd.DataFrame(cached_results[2]) if len(cached_results) > 2 and cached_results[2] else pd.DataFrame()
+                mean_rev_df = pd.DataFrame(cached_results[3]) if len(cached_results) > 3 and cached_results[3] else pd.DataFrame()
                 if not swing_df.empty: swing_df.to_csv(CONFIG["csv_output_swing"], index=False)
                 if not core_df.empty: core_df.to_csv(CONFIG["csv_output_core"], index=False)
                 if not crossover_df.empty: crossover_df.to_csv(CONFIG["csv_output_crossover"], index=False)
+                if not mean_rev_df.empty: mean_rev_df.to_csv(CONFIG.get("csv_output_mean_rev", "mean_reversion_book.csv"), index=False)
                 log.info("✓ CSVs exported from cache")
             except Exception as e:
                 log.warning(f"CSV export from cache skipped: {e}")
@@ -2158,7 +2669,7 @@ def run_screener(universe_override: Optional[dict[str, pd.DataFrame]] = None,
     for sym, df in liquid.items():
         if len(df) < CONFIG["min_bars_required"]:
             continue
-        r = evaluate_swing(sym, df)
+        r = evaluate_swing(sym, df, market_regime)
         if r:
             r["Market_Regime"] = market_regime.get("Regime", "NEUTRAL / CHOPPY")
             swing_results.append(r)
@@ -2223,6 +2734,18 @@ def run_screener(universe_override: Optional[dict[str, pd.DataFrame]] = None,
             core_results.append(r)
     core_df = (pd.DataFrame(core_results).sort_values("Score", ascending=False)
                if core_results else pd.DataFrame())
+
+    # ── MEAN REVERSION BOOK ──
+    log.info("Evaluating MEAN REVERSION book (oversold bounces)...")
+    mean_rev_results = []
+    for sym, df in liquid.items():
+        if len(df) < CONFIG["min_bars_required"]:
+            continue
+        r = evaluate_mean_reversion(sym, df)
+        if r:
+            r["Market_Regime"] = market_regime.get("Regime", "NEUTRAL / CHOPPY")
+            mean_rev_results.append(r)
+    mean_rev_df = pd.DataFrame(mean_rev_results).sort_values("Confidence_%", ascending=False) if mean_rev_results else pd.DataFrame()
 
     # LETHAL FIX: Scale down positions if total deployment exceeds portfolio size
     portfolio = CONFIG["portfolio_size_inr"]
@@ -2350,7 +2873,7 @@ def run_screener(universe_override: Optional[dict[str, pd.DataFrame]] = None,
     core_df = reconcile_with_holdings(core_df)
     crossover_df = reconcile_with_holdings(crossover_df)
 
-    print_report(swing_df, core_df, crossover_df, matched_deals, macro_events, market_regime)
+    print_report(swing_df, core_df, crossover_df, mean_rev_df, matched_deals, macro_events, market_regime)
 
     # ── EXPORT ──
     try:
@@ -2368,16 +2891,122 @@ def run_screener(universe_override: Optional[dict[str, pd.DataFrame]] = None,
             swing_df.to_dict(orient="records") if not swing_df.empty else [],
             core_df.to_dict(orient="records") if not core_df.empty else [],
             crossover_df.to_dict(orient="records") if not crossover_df.empty else [],
+            mean_rev_df.to_dict(orient="records") if not mean_rev_df.empty else [],
             matched_deals.to_dict(orient="records") if not matched_deals.empty else [],
             market_regime,
         )
         cache_screener_results(results_to_cache, key="latest", ttl_days=1)
         log.info("✓ Screener results cached to disk")
 
-    return swing_df, core_df, crossover_df, matched_deals, market_regime
+    return swing_df, core_df, crossover_df, mean_rev_df, matched_deals, market_regime
 
 
-def print_report(swing_df, core_df, crossover_df, bulk_deals_df, macro_events, market_regime=None):
+# ═══════════════════════════════════════════════════════════════════════════
+# 11c. ACTIONABLE TRADE CARD — NEW
+# ═══════════════════════════════════════════════════════════════════════════
+
+def print_trade_card(row: dict, book: str = "CORE"):
+    """
+    Prints a clean, actionable trade card for each pick.
+    Every field is stock-specific (no more uniform 10% stop-loss).
+    """
+    sym = row["Symbol"]
+    cmp = row["CMP"]
+    target = row["Target"]
+    target_low = row.get("Target_Low", target * 0.85)
+    target_high = row.get("Target_High", target * 1.15)
+    sl = row["Stop_Loss"]
+    profit_pct = row.get("Profit_%", 0)
+    risk_pct = row.get("Risk_%", 0)
+    rr = row.get("RR_Ratio", 0)
+    shares = row.get("Shares_To_Buy", 0)
+    deploy = row.get("Deploy_₹", 0)
+    max_risk = row.get("Max_Risk_₹", 0)
+    confidence = row.get("Confidence_%", 0)
+    horizon = row.get("Horizon", "1-2 years")
+    grade = row.get("Grade", "BUY")
+    atr = row.get("ATR_Used", "N/A")
+    regime_mult = row.get("Regime_Multiplier_Applied", 1.0)
+    conf_mult = row.get("Confidence_Multiplier", 1.0)
+
+    # Expected profit/loss in rupees
+    expected_profit_inr = shares * (target - cmp) if shares else 0
+    expected_loss_inr = shares * (cmp - sl) if shares else 0
+
+    # Kelly criterion & Expected Value
+    win_prob = confidence / 100.0
+    lose_prob = 1.0 - win_prob
+    kelly_pct = ((win_prob * rr) - lose_prob) / rr if rr > 0 else 0
+    kelly_pct = max(0, min(kelly_pct, 0.25))  # cap at 25% of portfolio
+    expected_value = (win_prob * expected_profit_inr) - (lose_prob * expected_loss_inr)
+
+    # Tax note
+    horizon_months = 6 if "3-6" in horizon else (18 if "1-2" in horizon else 2)
+    tax_class = "LTCG (10%)" if horizon_months >= 12 else "STCG (15%)"
+    net_profit_after_tax = expected_profit_inr * (0.90 if horizon_months >= 12 else 0.85)
+
+    # Piotroski-style: does it have the key fundamental checkboxes?
+    checks = []
+    if row.get("ROE_%") and row["ROE_%"] > 15: checks.append("✅ ROE>15%")
+    if row.get("Debt_Eq") is not None and row["Debt_Eq"] < 1.0: checks.append("✅ D/E<1.0")
+    if row.get("EPS_Growth_%") and row["EPS_Growth_%"] > 10: checks.append("✅ EPS growing")
+    if row.get("Div_Yield_%") and row["Div_Yield_%"] > 2: checks.append("✅ Dividend>2%")
+    if rr >= 2.5: checks.append("✅ R:R≥2.5")
+
+    # Hedge flag
+    hedge = row.get("Hedge_Recommended", False)
+    hedge_note = row.get("Hedge_Note", "")
+
+    print(f"""
+╔══════════════════════════════════════════════════════════════════════╗
+║  📌 TRADE CARD: {sym:<10}  [{grade}]  {book} BOOK
+╠══════════════════════════════════════════════════════════════════════╣
+║  ENTRY (TODAY'S CMP)     ₹{cmp:>10,.2f}
+║  TARGET (Central)        ₹{target:>10,.2f}   (+{profit_pct:.1f}%)
+║  TARGET Range            ₹{target_low:>10,.2f} – ₹{target_high:,.2f}
+║  STOP LOSS               ₹{sl:>10,.2f}   (-{risk_pct:.1f}%, ATR={atr})
+║  RISK:REWARD RATIO       1 : {rr:.1f}
+╠══════════════════════════════════════════════════════════════════════╣
+║  POSITION SIZING
+║  ─────────────────────────────────────────────────────────────────
+║  Shares to buy           {shares:>6} shares
+║  Capital to deploy       ₹{deploy:>10,.0f}
+║  Max risk on this trade  ₹{max_risk:>10,.0f}
+║  Confidence level        {confidence}%  (Regime mult: {regime_mult:.2f}x, Conf mult: {conf_mult:.2f}x)
+╠══════════════════════════════════════════════════════════════════════╣
+║  EXPECTED OUTCOME (if target hit)
+║  ─────────────────────────────────────────────────────────────────
+║  Gross profit            ₹{expected_profit_inr:>10,.0f}
+║  Tax class               {tax_class}
+║  Estimated net profit    ₹{net_profit_after_tax:>10,.0f}  (after tax estimate)
+║  Expected loss if SL hit ₹{expected_loss_inr:>10,.0f}
+║  Expected Value (EV)     ₹{expected_value:>10,.0f}
+║  Kelly % (optimal bet)   {kelly_pct*100:>9.1f}%
+║  Win Probability         {win_prob*100:>9.1f}%
+╠══════════════════════════════════════════════════════════════════════╣
+║  WHEN TO DEPLOY
+║  ─────────────────────────────────────────────────────────────────
+║  ✅ Deploy TODAY if CMP is within 2% of ₹{cmp:,.2f}
+║  ⏳ If stock rises >5% before you buy → SKIP, wait for pullback
+║  📅 Hold horizon: {horizon}
+║  🎯 Exit at: ₹{target:,.2f} OR trailing stop if stock >₹{target_low:,.2f}
+╠══════════════════════════════════════════════════════════════════════╣
+║  EXIT PLAN (scale out)
+║  ─────────────────────────────────────────────────────────────────
+║  Exit 1 (25% of shares): ₹{cmp * (1 + min(profit_pct * 0.5, 15)/100):>10,.2f}  (half target)
+║  Exit 2 (25% of shares): ₹{target:>10,.2f}  (full target)
+║  Exit 3 (25% of shares): ₹{cmp * (1 + min(profit_pct * 1.3, 55)/100):>10,.2f}  (runner — if momentum continues)
+║  Exit 4 (25% of shares): Trailing stop (ATR-based) — let winners run
+║  Hard Stop Loss:          ₹{sl:>10,.2f}  — EXIT immediately if breached
+╠══════════════════════════════════════════════════════════════════════╣
+║  QUALITY CHECKS: {" | ".join(checks) if checks else "⚠️ Limited data"}
+║  HORIZON TAX NOTE: {tax_class} — {"Hold >12M for LTCG" if horizon_months < 12 else "LTCG eligible ✅"}
+{("║  ⚠️ HEDGE FLAG: " + hedge_note[:60]) if hedge else "║  ✅ No hedge required"}
+╚══════════════════════════════════════════════════════════════════════╝""")
+    print()
+
+
+def print_report(swing_df, core_df, crossover_df, mean_rev_df, bulk_deals_df, macro_events, market_regime=None):
     print_market_regime(market_regime)
 
     print("\n" + "═" * 95)
@@ -2414,7 +3043,10 @@ def print_report(swing_df, core_df, crossover_df, bulk_deals_df, macro_events, m
     print(f"\n{'─'*95}\n  🌍 MACRO CONTEXT\n{'─'*95}")
     if macro_events:
         for e in macro_events:
-            print(f"  [{e['source']}] {e['note']}")
+            if isinstance(e, dict):
+                print(f"  [{e.get('source', '?')}] {e.get('note', '?')}")
+            else:
+                print(f"  {e}")
     else:
         print("  No live macro calendar data available this run.")
         print("  Manually check: RBI.org.in (MPC dates), federalreserve.gov (FOMC), "
@@ -2459,6 +3091,7 @@ def print_report(swing_df, core_df, crossover_df, bulk_deals_df, macro_events, m
                       f"NOT a backtested win-rate — see Confidence_Factors column)")
             if "News_Headlines" in top:
                 print(f"     News: {top['News_Headlines'][:300]}")
+            print_trade_card(top.to_dict(), book="SWING")
 
         # Per-stock justification block for top 5
         print(f"\n  📋 JUSTIFICATION — Top 5 Swing Picks")
@@ -2495,6 +3128,7 @@ def print_report(swing_df, core_df, crossover_df, bulk_deals_df, macro_events, m
             if "Confidence_%" in top:
                 print(f"     Confidence: {top['Confidence_%']:.0f}% (rules-based heuristic, "
                       f"NOT a backtested win-rate — see Confidence_Factors column)")
+            print_trade_card(top.to_dict(), book="CORE")
 
         # Per-stock justification block for top 5 STRONG BUY / BUY picks
         justifiable = core_df[core_df["Grade"].isin(["STRONG BUY", "BUY"])].head(5)
@@ -2511,6 +3145,25 @@ def print_report(swing_df, core_df, crossover_df, bulk_deals_df, macro_events, m
                 else:
                     print(f"    News:  {row.get('News_Headlines', 'Not available')}")
 
+    print(f"\n{'─'*95}\n  🔄 MEAN REVERSION BOOK — 1-2 MONTH OVERSOLD BOUNCES\n{'─'*95}")
+    if mean_rev_df.empty:
+        print("  No oversold bounce setups today.")
+    else:
+        cols = ["Symbol", "CMP", "Target", "Profit_%", "Stop_Loss", "Risk_%", "RR_Ratio",
+                 "Confidence_%", "Sigma_Below_SMA", "RSI", "Volume_Surge_Ratio",
+                 "Shares_To_Buy", "Deploy_₹", "Max_Risk_₹"]
+        cols = [c for c in cols if c in mean_rev_df.columns]
+        print(mean_rev_df[cols].head(10).to_string(index=False))
+        if len(mean_rev_df) > 0:
+            top = mean_rev_df.iloc[0]
+            print(f"\n  🏆 TOP MEAN REVERSION PICK: {top['Symbol']} — Entry ₹{top['CMP']:.0f} → "
+                  f"Target ₹{top['Target']:.0f} | SL ₹{top['Stop_Loss']:.0f} | "
+                  f"R:R 1:{top['RR_Ratio']:.1f} | σ={top.get('Sigma_Below_SMA', 'N/A')}")
+            if "Shares_To_Buy" in top:
+                print(f"     Buy {top['Shares_To_Buy']:.0f} shares | "
+                      f"Deploy ₹{top['Deploy_₹']:,.0f} | Max Risk ₹{top['Max_Risk_₹']:,.0f}")
+            print_trade_card(top.to_dict(), book="MEAN REVERSION")
+
     print(f"\n{'─'*95}\n  💼 BULK/BLOCK DEALS — MATCHED AGAINST YOUR SCREENED STOCKS\n{'─'*95}")
     if bulk_deals_df.empty:
         print("  No matches today. This means either:")
@@ -2525,7 +3178,7 @@ def print_report(swing_df, core_df, crossover_df, bulk_deals_df, macro_events, m
     print(f"\n{'─'*95}\n  💰 PORTFOLIO ALLOCATION SUMMARY\n{'─'*95}")
     total_deploy = 0
     total_risk = 0
-    for book_name, book_df in [("Swing (3-6mo)", swing_df), ("Core (1-2yr)", core_df)]:
+    for book_name, book_df in [("Swing (3-6mo)", swing_df), ("Core (1-2yr)", core_df), ("Mean Rev (1-2M)", mean_rev_df)]:
         if book_df.empty:
             continue
         book_deploy = book_df["Deploy_₹"].sum() if "Deploy_₹" in book_df.columns else 0
@@ -2535,7 +3188,7 @@ def print_report(swing_df, core_df, crossover_df, bulk_deals_df, macro_events, m
         print(f"  {book_name}: {len(book_df)} stocks | "
               f"Total Deploy: ₹{book_deploy:,.0f} | Total Max Risk: ₹{book_risk:,.0f}")
     print(f"  ─────────────────────────────────────────────────────────")
-    print(f"  TOTAL: {len(swing_df) + len(core_df)} stocks | "
+    print(f"  TOTAL: {len(swing_df) + len(core_df) + len(mean_rev_df)} stocks | "
           f"Total Deploy: ₹{total_deploy:,.0f} | Total Max Risk: ₹{total_risk:,.0f}")
     print(f"  Portfolio size: ₹{CONFIG['portfolio_size_inr']:,.0f} | "
           f"Risk per trade: {CONFIG['risk_per_trade_pct']*100:.1f}%")
